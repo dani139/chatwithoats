@@ -7,6 +7,7 @@ services:
       - "3000:3000" # Assuming frontend runs on port 3000
     volumes:
       - ./frontend:/app/frontend # Mount frontend code for hot reloading
+    restart: unless-stopped
 
   backend:
     build:
@@ -38,5 +39,51 @@ services:
       retries: 5
     restart: unless-stopped
 
+  postgres_wuzapi:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432" # New port for wuzapi's postgres
+    volumes:
+      - postgres_wuzapi_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: iamhipster
+      POSTGRES_DB: wuzapi_db # New database name for wuzapi
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d wuzapi_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  wuzapi:
+    build:
+      context: ./wuzapi
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080" # Host port 8081 maps to container port 8080
+    volumes:
+      - wuzapi_ssl:/app/ssl
+      - wuzapi_dbdata:/app/dbdata
+    environment:
+      WUZAPI_ADMIN_TOKEN: UsQSyX7KMf5QNSe1VMgZHqc6RZeXwqn1Tt0UuquKA
+      WUZAPI_WEBHOOK_TIMEOUT: 30
+      WUZAPI_MAX_RETRIES: 3
+      WUZAPI_RETRY_DELAY: 5
+      DB_HOST: postgres_wuzapi # Point to the new wuzapi postgres service
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: iamhipster
+      DB_NAME: wuzapi_db # Use the new database name
+      TZ: UTC
+    command: ["/app/server", "-address", "0.0.0.0", "-logtype", "json", "-admintoken", "${WUZAPI_ADMIN_TOKEN}"]
+    restart: unless-stopped
+    depends_on:
+      postgres_wuzapi: # Depend on the new wuzapi postgres service
+        condition: service_healthy
+
 volumes:
-  postgres_data: 
+  postgres_data:
+  postgres_wuzapi_data: # New volume for wuzapi's postgres
+  wuzapi_ssl:
+  wuzapi_dbdata: 
