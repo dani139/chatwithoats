@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+When issuing Docker Compose commands, always use `docker compose` (with a space, targeting Compose V2) and not `docker-compose` (with a hyphen, for the older V1).
