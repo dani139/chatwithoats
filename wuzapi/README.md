@@ -10,7 +10,7 @@
 
 *   **User Name**: `chatwithoats`
 *   **User Token (for API interaction)**: `iamhipster`
-*   **Webhook URL (for receiving events)**: `http://localhost:8000/backend/wuzapi_webhook`
+*   **Webhook URL (for receiving events)**: `http://backend:8000/backend/wuzapi_webhook` (This is the internal Docker network URL for the backend service)
 
 ## Admin Operations
 
@@ -18,13 +18,6 @@
 `UsQSyX7KMf5QNSe1VMgZHqc6RZeXwqn1Tt0UuquKA` (Replace `YOUR_WUZAPI_ADMIN_TOKEN` below with this value)
 
 **Service URL**: `http://localhost:8081`
-
-### 1. Start WuzAPI & its Database
-
-```bash
-docker compose -f ../docker-compose.dev.yml up -d wuzapi postgres_wuzapi
-```
-(Run from the project root directory if `docker-compose.dev.yml` is there, or adjust path accordingly)
 
 ### 2. List All Users
 
@@ -35,14 +28,14 @@ curl -s -X GET -H 'Authorization: YOUR_WUZAPI_ADMIN_TOKEN' http://localhost:8081
 ### 3. Add a New User (Example: `chatwithoats`)
 
 ```bash
-curl -s -X POST -H 'Authorization: YOUR_WUZAPI_ADMIN_TOKEN' -H 'Content-Type: application/json' --data '{"name":"chatwithoats","token":"iamhipster","webhook":"http://localhost:8000/backend/wuzapi_webhook","events":"Message,ReadReceipt"}' http://localhost:8081/admin/users
+curl -s -X POST -H 'Authorization: YOUR_WUZAPI_ADMIN_TOKEN' -H 'Content-Type: application/json' --data '{"name":"chatwithoats","token":"iamhipster","webhook":"http://backend:8000/backend/wuzapi_webhook","events":"Message,ReadReceipt"}' http://localhost:8081/admin/users
 ```
-*Response will contain the new user's ID (e.g., `{"id":2}`).*
+*Response will contain the new user's ID (e.g., `{"id":3}`). Note: IDs may change if users are deleted and re-added.*
 
-### 4. Delete a User (Example: User with ID 2)
+### 4. Delete a User (Example: User with ID 3)
 
 ```bash
-curl -s -X DELETE -H 'Authorization: YOUR_WUZAPI_ADMIN_TOKEN' http://localhost:8081/admin/users/2
+curl -s -X DELETE -H 'Authorization: YOUR_WUZAPI_ADMIN_TOKEN' http://localhost:8081/admin/users/3
 ```
 
 ## User-Specific API Usage

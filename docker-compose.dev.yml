@@ -4,22 +4,23 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.dev
     ports:
-      - "3000:3000" # Assuming frontend runs on port 3000
+      - "3000:3000"
     volumes:
-      - ./frontend:/app/frontend # Mount frontend code for hot reloading
+      - ./frontend:/app/frontend
     restart: unless-stopped
 
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     ports:
-      - "8000:8000" # Assuming backend runs on port 8000
+      - "8000:8000"
     volumes:
-      - ./backend:/app/backend # Mount backend code for hot reloading
+      - ./backend:/app
     depends_on:
-      postgres:
+      postgres: # If your main backend app (not just webhook handler) needs the main DB
         condition: service_healthy
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine

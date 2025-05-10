@@ -4,3 +4,80 @@ globs:
 alwaysApply: true
 ---
 When issuing Docker Compose commands, always use `docker compose` (with a space, targeting Compose V2) and not `docker-compose` (with a hyphen, for the older V1).
+
+## Docker Development Environment Commands
+
+All commands should be run from the root of the `chatwithoats` project directory.
+
+### Starting Services
+
+*   **Start all services in detached mode (runs in background):**
+    ```bash
+    docker compose -f docker-compose.dev.yml up -d
+    ```
+*   **Start all services and follow logs (attached mode):**
+    ```bash
+    docker compose -f docker-compose.dev.yml up
+    ```
+    (Press `Ctrl+C` to stop the services when in attached mode)
+
+### Viewing Logs
+
+*   **View logs for all running services:**
+    ```bash
+    docker compose -f docker-compose.dev.yml logs | cat
+    ```
+*   **Follow logs for all running services:**
+    ```bash
+    docker compose -f docker-compose.dev.yml logs -f | cat
+    ```
+*   **View logs for a specific service:**
+    *   `frontend`:
+        ```bash
+        docker compose -f docker-compose.dev.yml logs frontend | cat
+        ```
+    *   `backend`:
+        ```bash
+        docker compose -f docker-compose.dev.yml logs backend | cat
+        ```
+    *   `wuzapi`:
+        ```bash
+        docker compose -f docker-compose.dev.yml logs wuzapi | cat
+        ```
+    *   `postgres`:
+        ```bash
+        docker compose -f docker-compose.dev.yml logs postgres | cat
+        ```
+    *   `postgres_wuzapi`:
+        ```bash
+        docker compose -f docker-compose.dev.yml logs postgres_wuzapi | cat
+        ```
+*   **Follow logs for a specific service (e.g., `backend`):**
+    ```bash
+    docker compose -f docker-compose.dev.yml logs -f backend | cat
+    ```
+    (Replace `backend` with the desired service name: `frontend`, `wuzapi`, `postgres`, `postgres_wuzapi`)
+
+### Stopping Services
+
+*   **Stop all running services:**
+    ```bash
+    docker compose -f docker-compose.dev.yml down
+    ```
+
+### Rebuilding Services
+
+*   **Stop services and rebuild images (if Dockerfiles changed):**
+    ```bash
+    docker compose -f docker-compose.dev.yml up --build -d
+    ```
+    (Add `-d` to run in detached mode)
+
+    **Note:** Hot-reloading is enabled for services like the `backend` (Python/FastAPI). You typically only need to rebuild if you change dependencies (e.g., add a new Python package to `requirements.txt`) or modify the `Dockerfile` itself. For code-only changes, the services should auto-reload.
+
+### Checking Status
+
+*   **List running services:**
+    ```bash
+    docker compose -f docker-compose.dev.yml ps
+    ```
