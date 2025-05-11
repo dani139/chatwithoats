@@ -1,4 +1,6 @@
 fastapi
 uvicorn[standard]
 python-multipart
-httpx # For making HTTP requests to WuzAPI 
+httpx # For making HTTP requests to WuzAPI
+sqlalchemy>=1.4.0,<2.0.0
+psycopg2-binary # PostgreSQL driver 
