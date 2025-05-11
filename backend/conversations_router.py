@@ -1,12 +1,14 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict
 import logging
 import uuid
 from datetime import datetime
+from pydantic import BaseModel
 
 from db import get_db
-from models import Conversation, ConversationParticipant, ConversationCreate, ConversationResponse, ChatSettings, ChatSettingsCreate, ChatSettingsResponse
+from models import Conversation, ConversationParticipant, ConversationCreate, ConversationResponse, ChatSettings, ChatSettingsCreate, ChatSettingsResponse, Message, MessageType, SourceType
+from openai_helper import get_openai_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,19 +25,26 @@ async def create_conversation(conversation: ConversationCreate, db: Session = De
         if not chat_settings:
             logger.warning(f"Chat settings with ID {chat_settings_id} not found.")
             raise HTTPException(status_code=404, detail="Specified chat settings not found")
-    # If no chat_settings_id is provided, use the default chat settings for the user
-    # Or create a default template if none exists
-    elif conversation.source_type == "WHATSAPP":  # Only for WhatsApp chats for now
-        # We'll need to create a new chat setting for this conversation
-        # This is a simplified version - in production, you might want to copy from a template or default
+    # If no chat_settings_id is provided, create default chat settings based on source type
+    else:
+        # Create a new chat setting for this conversation
         settings_id = str(uuid.uuid4())
+        system_prompt = ""
         
-        # Create new chat settings DB record with basic default values
+        # Set appropriate system prompt based on source type
+        if conversation.source_type == "WHATSAPP":
+            system_prompt = "You are a friendly and laid back whatsapp assistant called Oats (Hebrew: אוטס)."
+        elif conversation.source_type == "PORTAL":
+            system_prompt = "You are Oats, a helpful AI assistant available through our web portal."
+        else:
+            system_prompt = "You are Oats, a helpful AI assistant."
+        
+        # Create new chat settings DB record with appropriate values
         db_chat_settings = ChatSettings(
             id=settings_id,
-            name=f"Settings for {conversation.name or 'Untitled Chat'}",
-            description="Auto-generated chat settings",
-            system_prompt="You are a friendly and laid back whatsapp assistant called Oats (Hebrew: אוטס).",
+            name=f"Settings for {conversation.name or 'Untitled Chat'} ({conversation.source_type.lower()})",
+            description=f"Auto-generated chat settings for {conversation.source_type.lower()} conversation",
+            system_prompt=system_prompt,
             model="gpt-4o-mini",
             enabled_tools=[]
         )
@@ -54,7 +63,8 @@ async def create_conversation(conversation: ConversationCreate, db: Session = De
         enabled_apis=conversation.enabled_apis,
         paths=conversation.paths,
         source_type=conversation.source_type,
-        chat_settings_id=chat_settings_id
+        chat_settings_id=chat_settings_id,
+        portal_user_id=conversation.portal_user_id if conversation.source_type == "PORTAL" else None
     )
     
     # Add to database
@@ -74,7 +84,7 @@ async def create_conversation(conversation: ConversationCreate, db: Session = De
     # Refresh the conversation to get the created_at timestamp
     db.refresh(db_conversation)
     
-    logger.info(f"Created conversation with ID: {chat_id}")
+    logger.info(f"Created {conversation.source_type} conversation with ID: {chat_id}")
     
     # Convert to response model (with participants list)
     return ConversationResponse(
@@ -89,7 +99,8 @@ async def create_conversation(conversation: ConversationCreate, db: Session = De
         paths=db_conversation.paths,
         participants=[p.number for p in db_conversation.participants],
         source_type=db_conversation.source_type,
-        chat_settings_id=db_conversation.chat_settings_id
+        chat_settings_id=db_conversation.chat_settings_id,
+        portal_user_id=db_conversation.portal_user_id
     )
 
 @router.get("/conversations", response_model=List[ConversationResponse])
@@ -243,3 +254,152 @@ async def delete_conversation(conversation_id: str, db: Session = Depends(get_db
 #     conversations_db[conversation_id].update(conversation.model_dump(exclude_unset=True))
 #     logger.info(f"Updated conversation with ID: {conversation_id}")
 #     return ConversationOutput(id=conversation_id, **conversations_db[conversation_id])
+
+class PortalMessageRequest(BaseModel):
+    content: str
+    user_id: str
+    username: str
+
+class PortalMessageResponse(BaseModel):
+    message_id: str
+    response_id: str
+    response_text: str
+    portal_user_id: Optional[str] = None
+
+@router.post("/conversations/{conversation_id}/portal-message", response_model=PortalMessageResponse)
+async def add_portal_message(
+    conversation_id: str,
+    message: PortalMessageRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Add a message to a portal conversation and get a response.
+    
+    Args:
+        conversation_id: The conversation ID
+        message: The message object containing content, user_id, and username
+        db: Database session
+        
+    Returns:
+        The response from the assistant
+    """
+    # Get the conversation
+    conversation = db.query(Conversation).filter(Conversation.chatid == conversation_id).first()
+    if not conversation:
+        logger.warning(f"Conversation with ID {conversation_id} not found.")
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    # Verify this is a portal conversation
+    if conversation.source_type != SourceType.PORTAL:
+        logger.warning(f"Conversation {conversation_id} is not a portal conversation.")
+        raise HTTPException(status_code=400, detail="This endpoint only supports portal conversations")
+    
+    # Create a new user message
+    message_id = str(uuid.uuid4())
+    user_message = Message(
+        id=message_id,
+        chatid=conversation_id,
+        sender=message.user_id,
+        sender_name=message.username,
+        type=MessageType.TEXT,
+        content=message.content,
+        role="user"
+    )
+    
+    # Add to database
+    db.add(user_message)
+    db.commit()
+    db.refresh(user_message)
+    
+    logger.info(f"Added portal message with ID: {message_id} to conversation: {conversation_id}")
+    
+    # Get response from OpenAI
+    response_text = await get_openai_response(conversation, user_message, db)
+    
+    # Create assistant message
+    assistant_message_id = str(uuid.uuid4())
+    assistant_message = Message(
+        id=assistant_message_id,
+        chatid=conversation_id,
+        sender=None,
+        sender_name="Oats",
+        type=MessageType.TEXT,
+        content=response_text,
+        role="assistant"
+    )
+    
+    # Add to database
+    db.add(assistant_message)
+    db.commit()
+    
+    logger.info(f"Added assistant response with ID: {assistant_message_id} to conversation: {conversation_id}")
+    
+    # Return response
+    return PortalMessageResponse(
+        message_id=message_id,
+        response_id=assistant_message_id,
+        response_text=response_text,
+        portal_user_id=conversation.portal_user_id
+    )
+
+class MessageResponse(BaseModel):
+    id: str
+    sender: Optional[str] = None
+    sender_name: Optional[str] = None
+    content: Optional[str] = None
+    type: str
+    role: Optional[str] = None
+    created_at: datetime
+    is_from_user: bool
+
+@router.get("/conversations/{conversation_id}/messages", response_model=List[MessageResponse])
+async def get_conversation_messages(
+    conversation_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    Get messages for a conversation.
+    
+    Args:
+        conversation_id: The conversation ID
+        limit: Maximum number of messages to return (default: 50)
+        offset: Number of messages to skip (default: 0)
+        db: Database session
+        
+    Returns:
+        List of messages
+    """
+    # Get the conversation
+    conversation = db.query(Conversation).filter(Conversation.chatid == conversation_id).first()
+    if not conversation:
+        logger.warning(f"Conversation with ID {conversation_id} not found.")
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    # Get messages for the conversation
+    messages = db.query(Message).filter(
+        Message.chatid == conversation_id
+    ).order_by(Message.created_at.desc()).offset(offset).limit(limit).all()
+    
+    # Convert to response model
+    result = []
+    for msg in messages:
+        result.append(
+            MessageResponse(
+                id=msg.id,
+                sender=msg.sender,
+                sender_name=msg.sender_name,
+                content=msg.content,
+                type=msg.type,
+                role=msg.role,
+                created_at=msg.created_at,
+                is_from_user=bool(msg.sender)  # True if sender is not None
+            )
+        )
+    
+    # Reverse to get chronological order
+    result.reverse()
+    
+    logger.info(f"Fetched {len(result)} messages for conversation {conversation_id}")
+    return result

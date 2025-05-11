@@ -36,6 +36,18 @@ chat_settings_tools = Table(
 )
 
 # SQLAlchemy Models
+class PortalUser(Base):
+    __tablename__ = "portal_users"
+    
+    id = Column(String, primary_key=True)
+    username = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationships
+    conversations = relationship("Conversation", back_populates="portal_user")
+
 class Tool(Base):
     __tablename__ = "tools"
     
@@ -77,13 +89,14 @@ class Conversation(Base):
     enabled_apis = Column(JSON, nullable=False)
     paths = Column(JSON, nullable=False)
     chat_settings_id = Column(String, ForeignKey("chat_settings.id"), nullable=True)
-    portal_user_id = Column(String, nullable=True)
+    portal_user_id = Column(String, ForeignKey("portal_users.id"), nullable=True)
     source_type = Column(String, nullable=False, default=SourceType.WHATSAPP)
     
     # Relationships
     participants = relationship("ConversationParticipant", back_populates="conversation")
     messages = relationship("Message", back_populates="conversation")
     chat_settings = relationship("ChatSettings", back_populates="conversations")
+    portal_user = relationship("PortalUser", back_populates="conversations")
 
 class ConversationParticipant(Base):
     __tablename__ = "conversation_participants"
@@ -135,6 +148,7 @@ class ConversationCreate(BaseModel):
     participants: List[str] = []
     source_type: SourceType = SourceType.WHATSAPP
     chat_settings_id: Optional[str] = None
+    portal_user_id: Optional[str] = None
 
 class ConversationResponse(BaseModel):
     chatid: str
@@ -149,6 +163,7 @@ class ConversationResponse(BaseModel):
     participants: List[str] = []
     source_type: SourceType = SourceType.WHATSAPP
     chat_settings_id: Optional[str] = None
+    portal_user_id: Optional[str] = None
     
     class Config:
         orm_mode = True
@@ -184,7 +199,9 @@ class ApiToolConfig(BaseModel):
     params: Optional[Dict[str, Any]] = None
     headers: Optional[Dict[str, str]] = None
     body: Optional[Dict[str, Any]] = None
+    body_schema: Optional[Dict[str, Any]] = None  # Schema for the request body
     response_mapping: Optional[Dict[str, str]] = None
+    server_url: Optional[str] = None  # Base URL for the API endpoint
 
 class OpenAIToolConfig(BaseModel):
     type: str  # "function" or built-in types like "web_search_preview"
@@ -213,6 +230,22 @@ class ToolUpdate(BaseModel):
 
 class ToolResponse(ToolBase):
     id: str
+    created_at: datetime.datetime
+    updated_at: Optional[datetime.datetime] = None
+    
+    class Config:
+        orm_mode = True
+
+# Portal user Pydantic models
+class PortalUserCreate(BaseModel):
+    id: str  # User ID from the portal system
+    username: str
+    email: Optional[str] = None
+
+class PortalUserResponse(BaseModel):
+    id: str
+    username: str
+    email: Optional[str] = None
     created_at: datetime.datetime
     updated_at: Optional[datetime.datetime] = None
     

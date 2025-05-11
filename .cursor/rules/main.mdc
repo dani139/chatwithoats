@@ -7,11 +7,15 @@ To understand the project's overall goals, architecture, and setup instructions,
 
 When issuing Docker Compose commands, always use `docker compose` (with a space, targeting Compose V2) and not `docker-compose` (with a hyphen, for the older V1).
 
+
 Available services: frontend, backend, wuzapi, posgres, postgres_wuzapi
 Start project services: `docker compose -f docker-compose.dev.yml up -d`
 View Logs: `docker compose -f docker-compose.dev.yml logs | cat` 
 Rebuil all: `docker compose -f docker-compose.dev.yml up --build -d`
 Status check: `docker compose -f docker-compose.dev.yml ps`
+Database query: `docker compose -f docker-compose.dev.yml exec postgres psql -U admin -d chatwithoats -c "SELECT * FROM portal_users;"`
+
+DATABASE_URL=postgresql://admin:iamhipste
 
 **Note:** After making code changes, check the logs to see if the change was made correctly. If encouter errors, fix them, and check again until fixed.
 

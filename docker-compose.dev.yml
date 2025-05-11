@@ -18,9 +18,10 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      OPENAI_API_KEY: ${OPENAI_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       DATABASE_URL: ${DATABASE_URL}
       WUZAPI_TOKEN: ${WUZAPI_TOKEN:-iamhipster}
+      DEBUG: "true"
     depends_on:
       postgres: # If your main backend app (not just webhook handler) needs the main DB
         condition: service_healthy

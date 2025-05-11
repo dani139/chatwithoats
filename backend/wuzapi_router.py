@@ -512,6 +512,19 @@ async def handle_new_message(chat_id: str, sender_jid: str, sender_name: str, me
         else:
             logger.error(f"Failed to send response to WhatsApp")
         
+        # Get recent messages to check for any tool results that should be sent to the user
+        recent_msgs = db.query(Message).filter(
+            Message.chatid == chat_id,
+            Message.type == MessageType.TOOL_RESULT,
+            Message.created_at > user_message.created_at
+        ).all()
+        
+        for tool_result_msg in recent_msgs:
+            # Send tool results to the user as well
+            result_text = f"Tool result from {tool_result_msg.function_name}:\n\n{tool_result_msg.function_result}"
+            await wuzapi_handler.send_message(chat_id, result_text)
+            logger.info(f"Sent tool result for {tool_result_msg.function_name} to WhatsApp")
+        
         return response_text
         
     except Exception as e:
