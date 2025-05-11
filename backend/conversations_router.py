@@ -1,12 +1,12 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import logging
 import uuid
 from datetime import datetime
 
 from db import get_db
-from models import Conversation, ConversationParticipant, ConversationCreate, ConversationResponse
+from models import Conversation, ConversationParticipant, ConversationCreate, ConversationResponse, ChatSettings, ChatSettingsCreate, ChatSettingsResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -15,6 +15,34 @@ router = APIRouter()
 async def create_conversation(conversation: ConversationCreate, db: Session = Depends(get_db)):
     # Generate a UUID for the chatid
     chat_id = str(uuid.uuid4())
+    
+    # If chat_settings_id is provided, check that it exists
+    chat_settings_id = conversation.chat_settings_id
+    if chat_settings_id:
+        chat_settings = db.query(ChatSettings).filter(ChatSettings.id == chat_settings_id).first()
+        if not chat_settings:
+            logger.warning(f"Chat settings with ID {chat_settings_id} not found.")
+            raise HTTPException(status_code=404, detail="Specified chat settings not found")
+    # If no chat_settings_id is provided, use the default chat settings for the user
+    # Or create a default template if none exists
+    elif conversation.source_type == "WHATSAPP":  # Only for WhatsApp chats for now
+        # We'll need to create a new chat setting for this conversation
+        # This is a simplified version - in production, you might want to copy from a template or default
+        settings_id = str(uuid.uuid4())
+        
+        # Create new chat settings DB record with basic default values
+        db_chat_settings = ChatSettings(
+            id=settings_id,
+            name=f"Settings for {conversation.name or 'Untitled Chat'}",
+            description="Auto-generated chat settings",
+            system_prompt="You are a friendly and laid back whatsapp assistant called Oats (Hebrew: אוטס).",
+            model="gpt-4o-mini",
+            enabled_tools=[]
+        )
+        
+        # Add to database
+        db.add(db_chat_settings)
+        chat_settings_id = settings_id
     
     # Create new conversation DB record
     db_conversation = Conversation(
@@ -25,7 +53,8 @@ async def create_conversation(conversation: ConversationCreate, db: Session = De
         silent=conversation.silent,
         enabled_apis=conversation.enabled_apis,
         paths=conversation.paths,
-        source_type=conversation.source_type
+        source_type=conversation.source_type,
+        chat_settings_id=chat_settings_id
     )
     
     # Add to database
@@ -59,13 +88,24 @@ async def create_conversation(conversation: ConversationCreate, db: Session = De
         enabled_apis=db_conversation.enabled_apis,
         paths=db_conversation.paths,
         participants=[p.number for p in db_conversation.participants],
-        source_type=db_conversation.source_type
+        source_type=db_conversation.source_type,
+        chat_settings_id=db_conversation.chat_settings_id
     )
 
 @router.get("/conversations", response_model=List[ConversationResponse])
-async def get_all_conversations(db: Session = Depends(get_db)):
-    # Get all conversations
-    conversations = db.query(Conversation).all()
+async def get_all_conversations(
+    chat_settings_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    # Start with base query
+    query = db.query(Conversation)
+    
+    # Apply filter if chat_settings_id is provided
+    if chat_settings_id:
+        query = query.filter(Conversation.chat_settings_id == chat_settings_id)
+    
+    # Get all conversations matching the filter
+    conversations = query.all()
     
     # Convert to response models
     result = []
@@ -83,7 +123,8 @@ async def get_all_conversations(db: Session = Depends(get_db)):
                 enabled_apis=conv.enabled_apis,
                 paths=conv.paths,
                 participants=participants,
-                source_type=conv.source_type
+                source_type=conv.source_type,
+                chat_settings_id=conv.chat_settings_id
             )
         )
     
@@ -117,7 +158,58 @@ async def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
         enabled_apis=conversation.enabled_apis,
         paths=conversation.paths,
         participants=participants,
-        source_type=conversation.source_type
+        source_type=conversation.source_type,
+        chat_settings_id=conversation.chat_settings_id
+    )
+
+@router.put("/conversations/{conversation_id}/chat_settings/{settings_id}", response_model=ConversationResponse)
+async def update_conversation_chat_settings(
+    conversation_id: str, 
+    settings_id: str, 
+    db: Session = Depends(get_db)
+):
+    # Get the conversation
+    conversation = db.query(Conversation).filter(Conversation.chatid == conversation_id).first()
+    
+    # Check if conversation found
+    if not conversation:
+        logger.warning(f"Conversation with ID {conversation_id} not found for chat settings update.")
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    # Check if the chat settings exists
+    chat_settings = db.query(ChatSettings).filter(ChatSettings.id == settings_id).first()
+    if not chat_settings:
+        logger.warning(f"Chat settings with ID {settings_id} not found for linking.")
+        raise HTTPException(status_code=404, detail="Chat settings not found")
+    
+    # Update the conversation's chat settings
+    conversation.chat_settings_id = settings_id
+    conversation.updated_at = datetime.utcnow()
+    
+    # Commit the changes
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+    
+    # Get participants
+    participants = [p.number for p in conversation.participants]
+    
+    logger.info(f"Updated chat settings for conversation {conversation_id} to {settings_id}")
+    
+    # Return updated conversation
+    return ConversationResponse(
+        chatid=conversation.chatid,
+        name=conversation.name,
+        is_group=conversation.is_group,
+        group_name=conversation.group_name,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        silent=conversation.silent,
+        enabled_apis=conversation.enabled_apis,
+        paths=conversation.paths,
+        participants=participants,
+        source_type=conversation.source_type,
+        chat_settings_id=conversation.chat_settings_id
     )
 
 @router.delete("/conversations/{conversation_id}", status_code=204)

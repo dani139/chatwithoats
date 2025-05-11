@@ -8,6 +8,13 @@ For details on how to manage database schema changes and run migrations, please 
 
 For instructions on setting up, administering, and pairing the WuzAPI service, refer to the [WuzAPI Quick Guide](wuzapi/README.md).
 
+## Backend Service
+
+For information about the backend API, database models, and WhatsApp integration, see the [Backend Documentation](backend/README.md).
+
 ## Future
-add wuzapi docker and config ssh thing to link to it
-add wuzapi backened processing, write it from scrath, with unitests maybe?
+users will have link to default chat settings for them, later on. no needed for now.
+start with the fancy responses one so internent tool can be used and tested because thats cool.
+and then also offer completion, maybe diff endpoint, or flag. 
+then have message endpoint use it.
+

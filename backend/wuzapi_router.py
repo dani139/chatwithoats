@@ -1,15 +1,19 @@
 from fastapi import APIRouter, Request, HTTPException, Form, BackgroundTasks, Depends
 from pydantic import BaseModel
-from typing import Any, Dict, Optional, List, Set
+from typing import Any, Dict, Optional, List, Set, Union, Literal
 import logging
 import json
 import os
 import httpx
+import base64
+import re
 from sqlalchemy.orm import Session
 import uuid
 
 from db import get_db
-from models import Conversation, ConversationParticipant, ConversationCreate, SourceType, Message, MessageType
+from models import Conversation, ConversationParticipant, ConversationCreate, SourceType, Message, MessageType, ChatSettings
+from chat_settings_router import get_or_create_web_search_tool
+from openai_helper import get_openai_response
 
 # Configure basic logging
 logger = logging.getLogger(__name__)
@@ -20,10 +24,276 @@ router = APIRouter()
 WUZAPI_BASE_URL = "http://wuzapi:8080" 
 WEBHOOK_PATH = "/wuzapi_webhook" 
 
+# Bot's WhatsApp number - messages from this number should be ignored
+BOT_WHATSAPP_NUMBER = "972543857242"
+
 # Track known chats to avoid duplicate processing
 known_chats: Set[str] = set()
 # Cache for group names to avoid repeated API calls
 group_info_cache: Dict[str, Dict[str, Any]] = {}
+
+# WuzAPI handler class
+class WuzapiHandler:
+    def __init__(self):
+        self.base_url = WUZAPI_BASE_URL
+        # Get token from environment variable or use default
+        token = os.environ.get("WUZAPI_TOKEN", "iamhipster")
+        self.headers = {
+            "Content-Type": "application/json",
+            "token": token
+        }
+        logger.info(f"Initialized WuzAPI handler with base URL: {self.base_url}")
+        
+    async def send_message(self, chat_id: str, message: str, context_info: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Send a text message via WuzAPI
+        
+        Args:
+            chat_id: The WhatsApp chat ID to send the message to
+            message: The message content to send
+            context_info: Optional context info for replying to messages
+            
+        Returns:
+            Message ID if successful, None otherwise
+        """
+        try:
+            url = f"{self.base_url}/chat/send/text"
+            
+            # Sanitize message (convert markdown-style formatting to WhatsApp format)
+            message = self.sanitize_message(message)
+            
+            # Create request data
+            data = {"Phone": chat_id, "Body": message}
+            
+            # Add context info if provided (for reply functionality)
+            if context_info:
+                if "stanza_id" in context_info and "participant" in context_info:
+                    data["ContextInfo"] = {
+                        "StanzaId": context_info["stanza_id"],
+                        "Participant": context_info["participant"]
+                    }
+            
+            # Make the request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=self.headers, json=data)
+                response.raise_for_status()
+                
+                # Extract message ID from response
+                response_data = response.json()
+                if response_data.get("success"):
+                    msg_id = response_data.get("data", {}).get("Id")
+                    logger.info(f"Message sent successfully to {chat_id}, ID: {msg_id}")
+                    return msg_id
+                else:
+                    logger.error(f"Failed to send message: {response_data}")
+                    return None
+                    
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error sending message to {chat_id}: {e.response.status_code} - {e.response.text}")
+            return None
+        except Exception as e:
+            logger.error(f"Error sending message to {chat_id}: {e}")
+            return None
+    
+    async def send_file(
+        self, 
+        chat_id: str, 
+        file_path: str, 
+        caption: str = "", 
+        display_name: str = "", 
+        context_info: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """
+        Send a file via WuzAPI
+        
+        Args:
+            chat_id: The WhatsApp chat ID to send the file to
+            file_path: Path to the file to send
+            caption: Optional caption for images
+            display_name: Optional display name for documents
+            context_info: Optional context info for replying to messages
+            
+        Returns:
+            Message ID if successful, None otherwise
+        """
+        try:
+            # Determine file type
+            image_extensions = ['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']
+            audio_extensions = ['mp3', 'wav', 'ogg', 'webm', 'flac', 'aac']
+            document_extensions = ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'zip', 'rar']
+            
+            # Get file extension
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                return None
+                
+            extension = file_path.split('.')[-1].lower()
+            
+            # Use filename as display name if not provided
+            if not display_name:
+                display_name = os.path.basename(file_path)
+            
+            # Encode file as base64
+            with open(file_path, "rb") as file_handler:
+                encoded_file = base64.b64encode(file_handler.read()).decode('utf-8')
+            
+            # Determine URL and data based on file type
+            url = f"{self.base_url}/chat/send/"
+            data = {"Phone": chat_id}
+            
+            if extension in image_extensions:
+                url += "image"
+                data["Image"] = f"data:image/{extension};base64,{encoded_file}"
+                if caption:
+                    data["Caption"] = caption
+            elif extension in audio_extensions:
+                url += "audio"
+                data["Audio"] = f"data:audio/{extension};base64,{encoded_file}"
+            else:
+                # Default to document
+                url += "document"
+                data["Document"] = f"data:application/octet-stream;base64,{encoded_file}"
+                data["FileName"] = display_name
+            
+            # Make the request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=self.headers, json=data)
+                response.raise_for_status()
+                
+                # Extract message ID from response
+                response_data = response.json()
+                if response_data.get("success"):
+                    msg_id = response_data.get("data", {}).get("Id")
+                    logger.info(f"File sent successfully to {chat_id}, ID: {msg_id}")
+                    return msg_id
+                else:
+                    logger.error(f"Failed to send file: {response_data}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Error sending file to {chat_id}: {e}")
+            return None
+    
+    async def send_reaction(self, chat_id: str, message_id: str, reaction: str) -> bool:
+        """
+        Send a reaction to a message via WuzAPI
+        
+        Args:
+            chat_id: The WhatsApp chat ID
+            message_id: The ID of the message to react to
+            reaction: The reaction emoji
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            url = f"{self.base_url}/chat/react"
+            data = {
+                "Phone": chat_id,
+                "Id": message_id,
+                "Body": reaction
+            }
+            
+            # Make the request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=self.headers, json=data)
+                response.raise_for_status()
+                
+                # Check success
+                response_data = response.json()
+                if response_data.get("success"):
+                    logger.info(f"Reaction sent successfully to message {message_id}")
+                    return True
+                else:
+                    logger.error(f"Failed to send reaction: {response_data}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error sending reaction to message {message_id}: {e}")
+            return False
+    
+    async def set_chat_presence(
+        self, 
+        chat_id: str, 
+        state: Literal["composing", "paused", "recording"] = "composing", 
+        media: bool = False
+    ) -> bool:
+        """
+        Set the chat presence (typing indicator) via WuzAPI
+        
+        Args:
+            chat_id: The WhatsApp chat ID
+            state: The presence state (composing, paused, recording)
+            media: Whether to show media presence
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            url = f"{self.base_url}/chat/presence"
+            data = {
+                "Phone": chat_id,
+                "State": state
+            }
+            
+            if media:
+                data["Media"] = "audio"
+            
+            # Make the request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=self.headers, json=data)
+                response.raise_for_status()
+                
+                # Check success
+                response_data = response.json()
+                if response_data.get("success"):
+                    logger.info(f"Chat presence set successfully for {chat_id}")
+                    return True
+                else:
+                    logger.error(f"Failed to set chat presence: {response_data}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error setting chat presence for {chat_id}: {e}")
+            return False
+    
+    def sanitize_message(self, text: str) -> str:
+        """
+        Sanitize message text for WhatsApp formatting
+        
+        Args:
+            text: The text to sanitize
+            
+        Returns:
+            Sanitized text
+        """
+        # First handle combined formats (bold-italic)
+        text = re.sub(r"\*\*_(.*?)_\*\*", r"*_\1_*", text)  # Bold-italic: **_text_** -> *_text_*
+        text = re.sub(r"_\*\*(.*?)\*\*_", r"*_\1_*", text)  # Italic-bold: _**text**_ -> *_text_*
+        
+        # Then handle single formats
+        text = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)  # Bold: **text** -> *text*
+        text = re.sub(r"#{1,3} (.*?)\n", r"*\1*\n", text)  # Headers -> Bold
+        text = re.sub(r"~~(.*?)~~", r"~\1~", text)  # Strikethrough: ~~text~~ -> ~text~
+        
+        # Handle bullet points
+        lines = text.split('\n')
+        processed_lines = []
+        for line in lines:
+            # Skip empty lines or lines with just whitespace
+            if not line.strip():
+                processed_lines.append('')
+                continue
+            # Handle bullet points
+            if line.strip().startswith('-'):
+                line = re.sub(r'^- (.*?)$', r'• \1', line.strip())
+            processed_lines.append(line)
+        
+        # Join lines and return
+        return '\n'.join(processed_lines)
+
+# Initialize WuzAPI handler
+wuzapi_handler = WuzapiHandler()
 
 async def get_group_info(group_jid: str, user_token: str) -> Optional[Dict[str, Any]]:
     """
@@ -98,6 +368,28 @@ async def process_conversation(chat_id: str, is_group: bool, sender_jid: str, pu
         conversation = await check_conversation_exists(chat_id, db)
         
         if not conversation:
+            # Create a new chat settings for this conversation
+            settings_id = str(uuid.uuid4())
+            
+            # Get or create web search tool
+            web_search_tool = await get_or_create_web_search_tool(db)
+            
+            # Create default chat settings with web search tool
+            db_chat_settings = ChatSettings(
+                id=settings_id,
+                name=f"Settings for {push_name if not is_group else group_name or 'Untitled Chat'}",
+                description="Auto-generated chat settings",
+                system_prompt="You are a friendly and laid back whatsapp assistant called Oats (Hebrew: אוטס).",
+                model="gpt-4o-mini",
+                enabled_tools=[web_search_tool.id]
+            )
+            
+            # Add to database
+            db.add(db_chat_settings)
+            
+            # Associate web search tool with chat settings
+            db_chat_settings.tools = [web_search_tool]
+            
             # Create new conversation if it doesn't exist
             # Generate a UUID for the chatid - using the original chat_id from WhatsApp instead
             # Generate conversation data
@@ -109,7 +401,8 @@ async def process_conversation(chat_id: str, is_group: bool, sender_jid: str, pu
                 enabled_apis=[],  # Default to no APIs enabled
                 paths={},  # Default to empty paths
                 participants=[sender_jid] if not is_group and sender_jid else (participants or []),
-                source_type=SourceType.WHATSAPP
+                source_type=SourceType.WHATSAPP,
+                chat_settings_id=settings_id  # Link to the chat settings
             )
             
             # Create conversation object
@@ -121,7 +414,8 @@ async def process_conversation(chat_id: str, is_group: bool, sender_jid: str, pu
                 silent=conversation_data.silent,
                 enabled_apis=conversation_data.enabled_apis,
                 paths=conversation_data.paths,
-                source_type=conversation_data.source_type
+                source_type=conversation_data.source_type,
+                chat_settings_id=settings_id  # Link to the chat settings
             )
             
             # Add to database
@@ -160,11 +454,17 @@ async def handle_new_message(chat_id: str, sender_jid: str, sender_name: str, me
     Returns a response text.
     """
     try:
+        # Get the conversation
+        conversation = db.query(Conversation).filter(Conversation.chatid == chat_id).first()
+        if not conversation:
+            logger.warning(f"No conversation found for chat ID: {chat_id}. Cannot process message.")
+            return "Error: Conversation not found"
+            
         # Generate a UUID for the message ID
         message_id = str(uuid.uuid4())
         
-        # Create a new message
-        db_message = Message(
+        # Create a new user message
+        user_message = Message(
             id=message_id,
             chatid=chat_id,
             sender=sender_jid,
@@ -175,18 +475,45 @@ async def handle_new_message(chat_id: str, sender_jid: str, sender_name: str, me
         )
         
         # Add to database
-        db.add(db_message)
-        
-        # Commit the transaction
+        db.add(user_message)
         db.commit()
+        db.refresh(user_message)
         
         logger.info(f"Stored new message with ID: {message_id} for chat: {chat_id}")
         
-        # Generate and return a text response
-        # In a real system, this would call an AI or other service to generate a response
-        response_text = f"Received: {message_text}"
+        # Set chat presence to "composing" to show typing indicator
+        await wuzapi_handler.set_chat_presence(chat_id, "composing")
+        
+        # Get response from OpenAI
+        response_text = await get_openai_response(conversation, user_message, db)
+        
+        # Store the assistant's response
+        assistant_message_id = str(uuid.uuid4())
+        assistant_message = Message(
+            id=assistant_message_id,
+            chatid=chat_id,
+            sender=None,  # No sender for assistant messages
+            sender_name="Oats",
+            type=MessageType.TEXT,
+            content=response_text,
+            role="assistant"
+        )
+        
+        # Add to database
+        db.add(assistant_message)
+        db.commit()
+        
+        logger.info(f"Stored assistant response with ID: {assistant_message_id} for chat: {chat_id}")
+        
+        # Send the response via WuzAPI
+        whatsapp_msg_id = await wuzapi_handler.send_message(chat_id, response_text)
+        if whatsapp_msg_id:
+            logger.info(f"Sent response to WhatsApp with ID: {whatsapp_msg_id}")
+        else:
+            logger.error(f"Failed to send response to WhatsApp")
         
         return response_text
+        
     except Exception as e:
         logger.error(f"Error handling new message for chat {chat_id}: {e}")
         return f"Error processing message: {str(e)}"
@@ -275,6 +602,11 @@ async def wuzapi_webhook_handler(
         sender_jid = info_data.get("Sender") 
         is_group_message = info_data.get("IsGroup", False)
         push_name = info_data.get("PushName", "Unknown User")
+        
+        # Skip processing if the message is from the bot itself
+        if sender_jid and BOT_WHATSAPP_NUMBER in sender_jid:
+            logger.info(f"Skipping message from bot itself: {sender_jid}")
+            return {"status": "success", "message": "Skipped bot's own message"}
 
         text = None
         reaction_text = None
@@ -360,18 +692,83 @@ async def wuzapi_webhook_handler(
     elif event_type == "ChatPresence":
         state = event_data.get("State")
         chat_id = event_data.get("Chat")
+        # Skip processing if the chat presence is from the bot itself
+        sender_jid = event_data.get("Sender")
+        if sender_jid and BOT_WHATSAPP_NUMBER in sender_jid:
+            logger.info(f"Skipping chat presence from bot itself: {sender_jid}")
+            return {"status": "success", "message": "Skipped bot's own chat presence"}
+            
         is_group_event = isinstance(event_data.get("Chat"), str) and "@g.us" in event_data.get("Chat")
         if is_group_event:
              logger.info(f"Client \'{client_name}\': Chat presence in Group Chat ID [{chat_id}]: {state}")
         else:
              logger.info(f"Client \'{client_name}\': Chat presence from User/Chat ID [{chat_id}]: {state}")
+             
     elif event_type == "ReadReceipt":
         chat_id = event_data.get("Chat")
+        # Skip processing if the read receipt is from the bot itself
+        sender_jid = event_data.get("Sender")
+        if sender_jid and BOT_WHATSAPP_NUMBER in sender_jid:
+            logger.info(f"Skipping read receipt from bot itself: {sender_jid}")
+            return {"status": "success", "message": "Skipped bot's own read receipt"}
+            
         logger.info(f"Client \'{client_name}\': Read receipt for Chat ID [{chat_id}]. Data: {event_data}")
+        
     elif event_type == "HistorySync":
         logger.info(f"Client \'{client_name}\': History sync event. Data: {event_data}")
     else:
         chat_id = event_data.get("Chat")
+        # Skip processing if the event is from the bot itself
+        sender_jid = event_data.get("Sender")
+        if sender_jid and BOT_WHATSAPP_NUMBER in sender_jid:
+            logger.info(f"Skipping event from bot itself: {sender_jid}")
+            return {"status": "success", "message": "Skipped bot's own event"}
+            
         logger.info(f"Client \'{client_name}\': Received unhandled event type \'{event_type}\' for chat {chat_id if chat_id else 'N/A'}. Data: {event_data}")
 
     return {"status": "success", "message": f"Webhook for event \'{event_type}\' received for client \'{client_name}\'"} 
+
+@router.post("/test-openai-response", response_model=MessageResponse)
+async def test_openai_response(message: MessageRequest, db: Session = Depends(get_db)):
+    """
+    Test endpoint for OpenAI integration.
+    """
+    try:
+        # Get conversation
+        conversation = db.query(Conversation).filter(Conversation.chatid == message.chat_id).first()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+            
+        # Create temporary user message (not saved to DB)
+        user_message = Message(
+            id=str(uuid.uuid4()),
+            chatid=message.chat_id,
+            sender=message.sender_jid,
+            sender_name=message.sender_name,
+            type=message.message_type,
+            content=message.message_text,
+            role="user"
+        )
+        
+        # Initialize the WuzAPI handler and test setting chat presence
+        logger.info(f"Initializing WuzAPI handler")
+        handler = WuzapiHandler()
+        logger.info(f"Setting chat presence for {message.chat_id}")
+        await handler.set_chat_presence(message.chat_id, "composing")
+        
+        # Get response from OpenAI
+        response_text = await get_openai_response(conversation, user_message, db)
+        
+        # Test sending the response via WuzAPI
+        logger.info(f"Sending response to WhatsApp: {message.chat_id}")
+        whatsapp_msg_id = await handler.send_message(message.chat_id, response_text)
+        if whatsapp_msg_id:
+            logger.info(f"Successfully sent message to WhatsApp with ID: {whatsapp_msg_id}")
+        else:
+            logger.error(f"Failed to send message to WhatsApp")
+        
+        return MessageResponse(response_text=response_text)
+        
+    except Exception as e:
+        logger.error(f"Error testing OpenAI response: {e}")
+        raise HTTPException(status_code=500, detail=f"Error testing OpenAI response: {str(e)}") 

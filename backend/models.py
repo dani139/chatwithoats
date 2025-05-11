@@ -1,9 +1,9 @@
-from sqlalchemy import Column, String, Boolean, ForeignKey, DateTime, JSON, Integer, Float
+from sqlalchemy import Column, String, Boolean, ForeignKey, DateTime, JSON, Integer, Float, Table
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Union
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from db import Base
 import datetime
 
@@ -22,7 +22,48 @@ class SourceType(str, Enum):
     WHATSAPP = "WHATSAPP"
     PORTAL = "PORTAL"
 
+class ToolType(str, Enum):
+    OPENAI_TOOL = "openai_tools"
+    API_TOOL = "api_tools"
+    MESSAGE_TOOL = "message_tools"
+
+# Association table for ChatSettings to Tools many-to-many relationship
+chat_settings_tools = Table(
+    'chat_settings_tools',
+    Base.metadata,
+    Column('chat_settings_id', String, ForeignKey('chat_settings.id')),
+    Column('tool_id', String, ForeignKey('tools.id'))
+)
+
 # SQLAlchemy Models
+class Tool(Base):
+    __tablename__ = "tools"
+    
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    type = Column(String, nullable=False)
+    configuration = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationships
+    chat_settings = relationship("ChatSettings", secondary=chat_settings_tools, back_populates="tools")
+
+class ChatSettings(Base):
+    __tablename__ = "chat_settings"
+    
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    system_prompt = Column(String, nullable=False)
+    model = Column(String, nullable=False, default="gpt-4o-mini")
+    enabled_tools = Column(JSON, nullable=False, default=[])
+    
+    # Relationships
+    conversations = relationship("Conversation", back_populates="chat_settings")
+    tools = relationship("Tool", secondary=chat_settings_tools, back_populates="chat_settings")
+
 class Conversation(Base):
     __tablename__ = "conversations"
     
@@ -35,13 +76,14 @@ class Conversation(Base):
     silent = Column(Boolean, nullable=False)
     enabled_apis = Column(JSON, nullable=False)
     paths = Column(JSON, nullable=False)
-    chat_settings_id = Column(String, nullable=True)
+    chat_settings_id = Column(String, ForeignKey("chat_settings.id"), nullable=True)
     portal_user_id = Column(String, nullable=True)
     source_type = Column(String, nullable=False, default=SourceType.WHATSAPP)
     
     # Relationships
     participants = relationship("ConversationParticipant", back_populates="conversation")
     messages = relationship("Message", back_populates="conversation")
+    chat_settings = relationship("ChatSettings", back_populates="conversations")
 
 class ConversationParticipant(Base):
     __tablename__ = "conversation_participants"
@@ -92,6 +134,7 @@ class ConversationCreate(BaseModel):
     paths: dict = {}
     participants: List[str] = []
     source_type: SourceType = SourceType.WHATSAPP
+    chat_settings_id: Optional[str] = None
 
 class ConversationResponse(BaseModel):
     chatid: str
@@ -105,6 +148,73 @@ class ConversationResponse(BaseModel):
     paths: dict = {}
     participants: List[str] = []
     source_type: SourceType = SourceType.WHATSAPP
+    chat_settings_id: Optional[str] = None
+    
+    class Config:
+        orm_mode = True
+
+# Chat settings Pydantic models
+class ChatSettingsBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    system_prompt: str
+    model: str = "gpt-4o-mini"
+    enabled_tools: List[str] = []
+
+class ChatSettingsCreate(ChatSettingsBase):
+    pass
+
+class ChatSettingsUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    model: Optional[str] = None
+    enabled_tools: Optional[List[str]] = None
+
+class ChatSettingsResponse(ChatSettingsBase):
+    id: str
+    
+    class Config:
+        orm_mode = True
+
+# Tool configuration models
+class ApiToolConfig(BaseModel):
+    endpoint: str
+    method: str  # GET, POST, PUT, DELETE
+    params: Optional[Dict[str, Any]] = None
+    headers: Optional[Dict[str, str]] = None
+    body: Optional[Dict[str, Any]] = None
+    response_mapping: Optional[Dict[str, str]] = None
+
+class OpenAIToolConfig(BaseModel):
+    type: str  # "function" or built-in types like "web_search_preview"
+    name: Optional[str] = None  # Required for function type
+    description: Optional[str] = None  # Required for function type
+    parameters: Optional[Dict[str, Any]] = None  # Required for function type
+
+class MessageToolConfig(BaseModel):
+    action: str
+    parameters: Dict[str, Any]
+
+# Tool models
+class ToolBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    type: ToolType
+    configuration: Union[ApiToolConfig, OpenAIToolConfig, MessageToolConfig]
+
+class ToolCreate(ToolBase):
+    pass
+
+class ToolUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    configuration: Optional[Dict[str, Any]] = None
+
+class ToolResponse(ToolBase):
+    id: str
+    created_at: datetime.datetime
+    updated_at: Optional[datetime.datetime] = None
     
     class Config:
         orm_mode = True 

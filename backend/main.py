@@ -5,6 +5,8 @@ import os
 # Import routers with relative imports
 from wuzapi_router import router as wuzapi_router
 from conversations_router import router as conversations_router
+from chat_settings_router import router as chat_settings_router
+from tools_router import router as tools_router
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +18,8 @@ app = FastAPI(title="ChatWithOats Backend API")
 # Include routers
 app.include_router(wuzapi_router) 
 app.include_router(conversations_router, prefix="/api")
+app.include_router(chat_settings_router, prefix="/api")
+app.include_router(tools_router, prefix="/api")
 
 @app.get("/")
 async def root():

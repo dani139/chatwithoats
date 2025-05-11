@@ -3,4 +3,5 @@ uvicorn[standard]
 python-multipart
 httpx # For making HTTP requests to WuzAPI
 sqlalchemy>=1.4.0,<2.0.0
-psycopg2-binary # PostgreSQL driver 
+psycopg2-binary # PostgreSQL driver
+openai>=1.33.0 # Latest OpenAI SDK for Responses API 
