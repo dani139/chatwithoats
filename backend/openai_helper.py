@@ -102,7 +102,14 @@ async def get_openai_response(
         # Get enabled tools for this chat
         tools = []
         if chat_settings.tools:
+            logger.info(f"Chat settings for {conversation.chatid} has {len(chat_settings.tools)} tools")
+            for tool in chat_settings.tools:
+                logger.info(f"Tool: {tool.id} - {tool.name} - {tool.type}")
+            
             tools = format_tools_for_openai(chat_settings.tools)
+            logger.info(f"Enabled tools for chat {conversation.chatid}: {json.dumps(tools)}")
+        else:
+            logger.warning(f"No tools found for chat settings {chat_settings.id}")
         
         # Make the API call to OpenAI
         logger.info(f"Sending request to OpenAI with model: {chat_settings.model}")
@@ -185,59 +192,90 @@ async def execute_api_tool(tool: Tool, arguments: Dict[str, Any]) -> str:
         # Prepare request parameters
         headers = {}
         params = {}
-        body = None
+        body = {}
         
-        # Add headers
-        for header_name, header_info in config.get("headers", {}).items():
-            # Only add required headers or headers provided in arguments
-            if header_info.get("required", False) or header_name in arguments:
-                headers[header_name] = arguments.get(header_name, "")
+        # Add configured headers if any
+        if config.get("headers"):
+            headers.update(config.get("headers", {}))
         
-        # Add OpenAI API key if this is an OpenAI API call (based on server_url)
+        # Add query parameters from arguments that match param schema
+        if config.get("params"):
+            for param_name, param_info in config.get("params", {}).items():
+                if param_name in arguments:
+                    params[param_name] = arguments[param_name]
+                    
+        # Add body parameters from arguments that match body schema
+        if config.get("body_schema"):
+            body_schema = config.get("body_schema", {})
+            
+            if isinstance(body_schema, dict) and "properties" in body_schema:
+                # Extract properties from arguments that match the schema
+                for prop_name in body_schema.get("properties", {}):
+                    if prop_name in arguments:
+                        body[prop_name] = arguments[prop_name]
+        
+        # Log the request details
+        logger.info(f"Executing API tool {tool.name} ({tool.id}): {method} {full_url}")
+        logger.info(f"Headers: {headers}")
+        logger.info(f"Params: {params}")
+        logger.info(f"Body: {body}")
+        
+        # Check if this is an OpenAI API call to add the API key
         if server_url and "api.openai.com" in server_url:
-            headers["Authorization"] = f"Bearer {os.environ.get('OPENAI_API_KEY')}"
-            headers["Content-Type"] = "application/json"
+            if "Authorization" not in headers:
+                headers["Authorization"] = f"Bearer {os.environ.get('OPENAI_API_KEY')}"
+            
+            if "Content-Type" not in headers:
+                headers["Content-Type"] = "application/json"
         
-        # Add query parameters
-        for param_name, param_info in config.get("params", {}).items():
-            # Only add required params or params provided in arguments
-            if param_info.get("required", False) or param_name in arguments:
-                params[param_name] = arguments.get(param_name, "")
-        
-        # Prepare body if needed
-        if method in ["POST", "PUT", "PATCH"]:
-            # Extract body parameters from arguments
-            # Skip params that were used in the query string
-            body_params = {k: v for k, v in arguments.items() if k not in params}
-            if body_params:
-                body = body_params
-        
-        # Make the request
+        # Make the API request based on method
         async with httpx.AsyncClient() as client:
             if method == "GET":
-                response = await client.get(full_url, params=params, headers=headers)
+                response = await client.get(full_url, headers=headers, params=params)
             elif method == "POST":
-                response = await client.post(full_url, params=params, headers=headers, json=body)
+                response = await client.post(full_url, headers=headers, params=params, json=body)
             elif method == "PUT":
-                response = await client.put(full_url, params=params, headers=headers, json=body)
+                response = await client.put(full_url, headers=headers, params=params, json=body)
             elif method == "DELETE":
-                response = await client.delete(full_url, params=params, headers=headers)
-            elif method == "PATCH":
-                response = await client.patch(full_url, params=params, headers=headers, json=body)
+                response = await client.delete(full_url, headers=headers, params=params)
             else:
-                return f"Unsupported HTTP method: {method}"
+                raise ValueError(f"Unsupported HTTP method: {method}")
             
-            # Get response content
-            try:
-                result = response.json()
-                return json.dumps(result, indent=2)
-            except:
-                # Return text if not JSON
-                return response.text
+            # Check if the response was successful
+            response.raise_for_status()
+            
+            # Check for binary data (like audio files)
+            content_type = response.headers.get("content-type", "")
+            
+            # Special handling for audio responses from speech API
+            if "audio/mpeg" in content_type or "audio/mp3" in content_type or "/audio/" in endpoint:
+                # For audio responses, save to a file and return the path
+                file_id = str(uuid.uuid4())
+                file_path = f"/tmp/speech_{file_id}.mp3"
                 
+                with open(file_path, "wb") as f:
+                    f.write(response.content)
+                
+                return f"Audio file generated and saved as {file_path}. You can listen to it or download it."
+            
+            # For JSON responses
+            if "application/json" in content_type:
+                try:
+                    return json.dumps(response.json(), indent=2)
+                except:
+                    return response.text
+            
+            # For text responses
+            return response.text
+            
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Error code: {e.response.status_code} - {e.response.text}"
+        logger.error(f"API call failed: {error_msg}")
+        return error_msg
     except Exception as e:
-        logger.error(f"Error executing API tool {tool.name}: {e}")
-        return f"Error executing tool: {str(e)}"
+        error_msg = f"Error executing API tool: {str(e)}"
+        logger.error(error_msg)
+        return error_msg
 
 async def handle_tool_calls(
     response, 

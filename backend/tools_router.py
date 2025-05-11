@@ -25,96 +25,64 @@ def format_tools_for_openai(tools: List[Tool]) -> List[Dict[str, Any]]:
         List of dictionaries formatted for OpenAI API
     """
     openai_tools = []
+    logger.info(f"Formatting {len(tools)} tools for OpenAI")
     
     for tool in tools:
-        if tool.type == ToolType.OPENAI_TOOL:
+        try:
             config = tool.configuration
             
-            # Handle built-in tools with just a type
-            if "type" in config and config["type"] != "function":
-                tool_obj = {"type": config["type"]}
+            if tool.type == ToolType.OPENAI_TOOL:
+                # For OpenAI native tools, just use the type directly
+                if "type" in config:
+                    openai_tools.append({"type": config["type"]})
                 
-                # Add name for tools like 'speech' that require it
-                if "name" in config:
-                    tool_obj["name"] = config["name"]
+            elif tool.type == ToolType.API_TOOL:
+                # Convert API tools to function tools
+                parameters = {"type": "object", "properties": {}, "required": []}
                 
-                openai_tools.append(tool_obj)
-            
-            # Handle function tools
-            elif config.get("type") == "function":
-                openai_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": config.get("function", {}).get("name", ""),
-                        "description": config.get("function", {}).get("description", ""),
-                        "parameters": config.get("function", {}).get("parameters", {})
-                    }
-                })
-        
-        elif tool.type == ToolType.API_TOOL:
-            # Convert API tools to function tools for OpenAI
-            config = tool.configuration
-            
-            # Create a parameter schema for the API tool
-            parameters = {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-            
-            # Add query parameters if any
-            if config.get("params"):
+                # Process query parameters
                 for param_name, param_info in config.get("params", {}).items():
-                    param_schema = param_info.get("schema", {})
-                    parameters["properties"][param_name] = param_schema
-                    
-                    # Add parameter description if available
-                    if "description" in param_info and param_info["description"]:
+                    parameters["properties"][param_name] = param_info.get("schema", {})
+                    if "description" in param_info:
                         parameters["properties"][param_name]["description"] = param_info["description"]
-                    
-                    # Add to required list if parameter is required
                     if param_info.get("required", False):
                         parameters["required"].append(param_name)
-            
-            # Add body parameters if we have a body schema
-            body_schema = config.get("body_schema")
-            if body_schema:
-                # If there are properties in the body schema, add them to our parameters
+                
+                # Process body schema parameters
+                body_schema = config.get("body_schema", {})
                 if isinstance(body_schema, dict):
-                    # If the schema has properties, add them directly
-                    if "properties" in body_schema:
-                        for prop_name, prop_schema in body_schema.get("properties", {}).items():
-                            parameters["properties"][prop_name] = prop_schema
-                        
-                        # Add required fields if any
-                        for req_field in body_schema.get("required", []):
-                            if req_field not in parameters["required"]:
-                                parameters["required"].append(req_field)
+                    # Add properties from body schema
+                    for prop_name, prop_schema in body_schema.get("properties", {}).items():
+                        parameters["properties"][prop_name] = prop_schema
                     
-                    # If it's a different type of schema object, use it as a whole
-                    else:
-                        # Add body parameter for non-standard schemas
-                        for prop_name, prop_value in body_schema.items():
-                            if prop_name not in ["type", "required"]:
-                                parameters["properties"][prop_name] = prop_value
-            
-            # Get the full endpoint with server URL if available
-            endpoint = config.get("endpoint", "")
-            server_url = config.get("server_url", "")
-            full_endpoint = f"{server_url}{endpoint}" if server_url else endpoint
-                        
-            # Create the function tool
-            function_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description or f"{config.get('method', 'GET')} {full_endpoint}",
+                    # Add required fields
+                    for req_field in body_schema.get("required", []):
+                        if req_field not in parameters["required"]:
+                            parameters["required"].append(req_field)
+                
+                # Use tool's name directly, just ensure it's valid
+                import re
+                clean_name = re.sub(r'[^a-zA-Z0-9_-]', '', tool.name.replace(" ", "_").lower())
+                
+                # Get endpoint info
+                endpoint = config.get("endpoint", "")
+                server_url = config.get("server_url", "")
+                method = config.get("method", "GET")
+                full_endpoint = f"{server_url}{endpoint}" if server_url else endpoint
+                
+                function_tool = {
+                    "type": "function",
+                    "name": clean_name,
+                    "description": tool.description or f"{method} {full_endpoint}",
                     "parameters": parameters
                 }
-            }
-            
-            openai_tools.append(function_tool)
+                
+                openai_tools.append(function_tool)
+                
+        except Exception as e:
+            logger.error(f"Error processing tool {tool.id} - {tool.name}: {str(e)}")
     
+    logger.info(f"Returning {len(openai_tools)} formatted tools")
     return openai_tools
 
 # Tool CRUD operations
@@ -590,7 +558,12 @@ async def import_openapi_spec(
                     continue
                 
                 # Get operation details
-                operation_id = operation.get('operationId', f"{method}_{path}")
+                operation_id = operation.get('operationId')
+                if not operation_id:
+                    # Create a sanitized operation ID if not provided
+                    sanitized_path = path.replace('/', '_').replace('{', '').replace('}', '')
+                    operation_id = f"{method}{sanitized_path}"
+                
                 summary = operation.get('summary', f"{method.upper()} {path}")
                 description = operation.get('description', summary)
                 
@@ -660,11 +633,17 @@ async def import_openapi_spec(
                             'description': param.get('description', '')
                         }
                 
-                # Create tool name
-                tool_name = f"{operation_id}"
+                # Create function-friendly name
+                function_name = operation_id.replace('-', '_').replace(' ', '_').lower()
                 
                 # Generate a UUID for the id
                 tool_id = str(uuid.uuid4())
+                
+                # Prepare a description that properly describes what the API does
+                tool_description = description or f"{method.upper()} {path}"
+                if server_url:
+                    full_url = f"{server_url}{path}" if not path.startswith('/') else f"{server_url}{path[1:]}"
+                    tool_description += f" (Endpoint: {full_url})"
                 
                 # Create the tool object
                 tool_config = ApiToolConfig(
@@ -679,8 +658,8 @@ async def import_openapi_spec(
                 # Create new tool DB record
                 db_tool = Tool(
                     id=tool_id,
-                    name=tool_name,
-                    description=description,
+                    name=function_name,
+                    description=tool_description,
                     type=ToolType.API_TOOL,
                     configuration=tool_config.dict(),
                     created_at=datetime.utcnow()
@@ -815,7 +794,7 @@ def resolve_schema_reference_from_spec(schema: Dict[str, Any], spec: Dict[str, A
 @router.post("/tools/create-speech-tool/{settings_id}")
 async def create_speech_tool(settings_id: str, db: Session = Depends(get_db)):
     """
-    Create the OpenAI speech tool and assign it to the specified chat settings.
+    Create the OpenAI speech API tool and assign it to the specified chat settings.
     
     Args:
         settings_id: ID of the chat settings to assign the tool to
@@ -832,7 +811,7 @@ async def create_speech_tool(settings_id: str, db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Chat settings not found")
         
         # Check if speech tool already exists
-        existing_tool = db.query(Tool).filter(Tool.name == "speech").first()
+        existing_tool = db.query(Tool).filter(Tool.name == "text_to_speech").first()
         
         if existing_tool:
             logger.info(f"Speech tool already exists with ID: {existing_tool.id}")
@@ -857,19 +836,54 @@ async def create_speech_tool(settings_id: str, db: Session = Depends(get_db)):
             
             return existing_tool
         
-        # Define the speech tool configuration
+        # Define the speech tool configuration as an API tool
         speech_tool_config = {
-            "type": "speech",
-            "name": "speech"  # The name is required for the OpenAI API
+            "endpoint": "/audio/speech",
+            "method": "POST",
+            "server_url": "https://api.openai.com/v1",
+            "params": {},
+            "headers": {
+                "Content-Type": {
+                    "required": True,
+                    "schema": {"type": "string"},
+                    "description": "Content type of the request"
+                }
+            },
+            "body_schema": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "The model to use for generating the audio"
+                    },
+                    "input": {
+                        "type": "string",
+                        "description": "The text to generate audio for"
+                    },
+                    "voice": {
+                        "type": "string",
+                        "description": "The voice to use (alloy, echo, fable, onyx, nova, or shimmer)"
+                    },
+                    "response_format": {
+                        "type": "string",
+                        "description": "The format of the audio response (mp3, opus, aac, or flac)"
+                    },
+                    "speed": {
+                        "type": "number",
+                        "description": "The speed of the audio (0.25 to 4.0)"
+                    }
+                },
+                "required": ["model", "input", "voice"]
+            }
         }
         
         # Create the tool
         tool_id = str(uuid.uuid4())
         speech_tool = Tool(
             id=tool_id,
-            name="speech",
-            description="Convert text to speech using OpenAI's API",
-            type=ToolType.OPENAI_TOOL,
+            name="text_to_speech",
+            description="Convert text to speech using OpenAI's Audio API",
+            type=ToolType.API_TOOL,
             configuration=speech_tool_config,
             created_at=datetime.utcnow()
         )
@@ -891,7 +905,7 @@ async def create_speech_tool(settings_id: str, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(speech_tool)
         
-        logger.info(f"Created speech tool with ID: {tool_id} and assigned it to chat settings {settings_id}")
+        logger.info(f"Created speech API tool with ID: {tool_id} and assigned it to chat settings {settings_id}")
         
         return speech_tool
         

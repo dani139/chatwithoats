@@ -28,7 +28,7 @@ async def get_or_create_web_search_tool(db: Session) -> Tool:
     web_search_tool = None
     
     for tool in openai_tools:
-        if tool.configuration.get('type') == 'web_search_preview':
+        if tool.configuration.get('type') == 'web_search':
             web_search_tool = tool
             break
     
@@ -43,7 +43,7 @@ async def get_or_create_web_search_tool(db: Session) -> Tool:
             description="Search the web for the latest information",
             type=ToolType.OPENAI_TOOL,
             configuration={
-                "type": "web_search_preview"
+                "type": "web_search"
             },
             created_at=datetime.utcnow()
         )
@@ -58,17 +58,20 @@ async def get_or_create_web_search_tool(db: Session) -> Tool:
     return web_search_tool
 
 @router.post("/chat-settings", response_model=ChatSettingsResponse)
-async def create_chat_settings(chat_settings: ChatSettingsCreate, db: Session = Depends(get_db)):
+async def create_chat_settings(chat_settings: ChatSettingsCreate, add_web_search: bool = True, db: Session = Depends(get_db)):
     # Generate a UUID for the id
     settings_id = str(uuid.uuid4())
     
     # Get or create web search tool
-    web_search_tool = await get_or_create_web_search_tool(db)
-    
-    # Add web search tool ID to enabled_tools if not already present
+    web_search_tool = None
     enabled_tools = list(chat_settings.enabled_tools) if chat_settings.enabled_tools else []
-    if web_search_tool.id not in enabled_tools:
-        enabled_tools.append(web_search_tool.id)
+    
+    if add_web_search:
+        web_search_tool = await get_or_create_web_search_tool(db)
+        
+        # Add web search tool ID to enabled_tools if not already present
+        if web_search_tool.id not in enabled_tools:
+            enabled_tools.append(web_search_tool.id)
     
     # Create new chat settings DB record
     db_chat_settings = ChatSettings(
@@ -83,14 +86,15 @@ async def create_chat_settings(chat_settings: ChatSettingsCreate, db: Session = 
     # Add to database
     db.add(db_chat_settings)
     
-    # Associate web search tool with chat settings
-    db_chat_settings.tools = [web_search_tool]
+    # Associate web search tool with chat settings if enabled
+    if add_web_search and web_search_tool:
+        db_chat_settings.tools = [web_search_tool]
     
     # Commit the transaction
     db.commit()
     db.refresh(db_chat_settings)
     
-    logger.info(f"Created chat settings with ID: {settings_id} and linked web search tool")
+    logger.info(f"Created chat settings with ID: {settings_id} {' and linked web search tool' if add_web_search else ' without web search tool'}")
     
     # Convert to response model
     return ChatSettingsResponse(
