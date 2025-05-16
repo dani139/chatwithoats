@@ -36,9 +36,38 @@ async def health_check():
 @app.on_event("startup")
 async def startup_db_client():
     logger.info("Starting up the FastAPI application")
-    openai_key = os.environ.get("OPENAI_API_KEY", "NOT SET")
-    masked_key = openai_key[:6] + "..." if openai_key and openai_key != "NOT SET" else openai_key
+    
+    # Read directly from the .env file instead of environment variable
+    try:
+        with open("/app/.env", "r") as f:
+            content = f.read()
+            if "OPENAI_API_KEY=" in content:
+                key_part = content.split("OPENAI_API_KEY=")[1]
+                if "\n" in key_part:
+                    openai_key = key_part.split("\n")[0]
+                else:
+                    openai_key = key_part
+                # Clean up any whitespace and newlines
+                openai_key = openai_key.replace("\n", "").strip()
+                # Set it in the environment for the app to use
+                os.environ["OPENAI_API_KEY"] = openai_key
+                masked_key = openai_key[:6] + "..." if openai_key else "NOT SET"
+                logger.info(f"Successfully read API key from .env file: {masked_key}")
+            else:
+                masked_key = "KEY NOT FOUND IN .ENV"
+    except Exception as e:
+        logger.error(f"Error reading API key from file: {str(e)}")
+        # Fallback to environment variable
+        openai_key = os.environ.get("OPENAI_API_KEY", "NOT SET")
+        masked_key = openai_key[:6] + "..." if openai_key and openai_key != "NOT SET" else openai_key
+        
     logger.info(f"OPENAI_API_KEY on startup: {masked_key}")
+    
+    # Also directly check what's actually in the environment
+    env_key = os.environ.get("OPENAI_API_KEY", "NOT_SET")
+    masked_env_key = env_key[:6] + "..." if env_key and len(env_key) > 6 else env_key
+    logger.info(f"Environment OPENAI_API_KEY value: {masked_env_key}")
+    
     # Database connection setup happens in the db.py module
 
 # Shutdown event to close database connection

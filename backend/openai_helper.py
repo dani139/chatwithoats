@@ -26,7 +26,10 @@ class OpenAIHelper:
             api_key: The OpenAI API key to use. If None, will try to get from environment.
         """
         # Get API key from parameter, environment, or .env file
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        api_key_raw = api_key or os.getenv("OPENAI_API_KEY")
+        
+        # Clean up the API key - remove any whitespace, newlines, etc.
+        self.api_key = api_key_raw.replace("\n", "").replace(" ", "").strip() if api_key_raw else None
         
         if not self.api_key:
             logger.error("No OpenAI API key provided!")
@@ -615,6 +618,51 @@ class OpenAIHelper:
         
         return "Unsupported tool type."
 
+# Create a singleton instance of OpenAIHelper
+# Read the API key directly from the .env file to bypass any environment caching issues
+def _read_api_key_from_env_file():
+    # First, try the direct path in the app directory
+    try:
+        with open("/app/.env", "r") as f:
+            content = f.read()
+            # Find the line starting with OPENAI_API_KEY
+            if "OPENAI_API_KEY=" in content:
+                # Extract everything after OPENAI_API_KEY= until the next newline or end of file
+                key_part = content.split("OPENAI_API_KEY=")[1]
+                # If there's another key after this one, only take up to that point
+                if "\n" in key_part:
+                    key = key_part.split("\n")[0]
+                else:
+                    key = key_part
+                # Clean up any whitespace
+                key = key.replace("\n", "").strip()
+                logger.info(f"Successfully read API key from /app/.env: {key[:6]}...")
+                return key
+    except Exception as e:
+        logger.error(f"Error reading from /app/.env: {str(e)}")
+        
+    # Try the project root
+    try:
+        with open(".env", "r") as f:
+            content = f.read()
+            # Find the line starting with OPENAI_API_KEY
+            if "OPENAI_API_KEY=" in content:
+                # Extract everything after OPENAI_API_KEY= until the next newline or end of file
+                key_part = content.split("OPENAI_API_KEY=")[1]
+                # If there's another key after this one, only take up to that point
+                if "\n" in key_part:
+                    key = key_part.split("\n")[0]
+                else:
+                    key = key_part
+                # Clean up any whitespace
+                key = key.replace("\n", "").strip()
+                logger.info(f"Successfully read API key from .env: {key[:6]}...")
+                return key
+    except Exception as e:
+        logger.error(f"Error reading from .env: {str(e)}")
+    
+    return None
 
-# Create a singleton instance for global use
-openai_helper = OpenAIHelper() 
+api_key = _read_api_key_from_env_file() or os.getenv("OPENAI_API_KEY")
+logger.info(f"Initializing OpenAI Helper with key from file: {api_key[:6] + '...' if api_key else 'None'}")
+openai_helper = OpenAIHelper(api_key=api_key) 

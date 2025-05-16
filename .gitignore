@@ -48,3 +48,4 @@ venv/
 
 # Cursor specific
 .cursor/runtime/ 
+README.md

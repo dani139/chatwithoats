@@ -14,10 +14,16 @@ For information about the backend API, database models, and WhatsApp integration
 
 ## Future
 
+put back .env, get key from there. remove from repo also backwards. fix the bug, maybe not pased from docker or something.
 make sure web_search works, and also speech. 
 
 add user login, have flow withouth gmail. but maybe impl together with gmail oath.
 
+linking of portal user with whatsahh phone number
+
+having object for whatsapp conversation, so also has chat config, but also has silent mode and maybe more.
+
 implement database idea
 implement ui elements idea
 
+consider implemeting farmer idea, where all primitives can be used with ai, and chat has full context of actions and history.
