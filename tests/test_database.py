@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 import unittest
-import pytest
-import os
 import subprocess
 import json
-import psycopg2
-from psycopg2 import sql
+import os
+import pytest
+
+# Get the project root directory
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DOCKER_COMPOSE_FILE = os.path.join(PROJECT_ROOT, "docker-compose.dev.yml")
 
 def run_sql(query):
-    """Run SQL query in the postgres container"""
+    """Run a SQL query and return the result"""
     result = subprocess.run(
-        ["docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T", "postgres", 
-            "psql", "-U", "admin", "-d", "chatwithoats", "-t", "-c", query],
-        capture_output=True,
+        ["docker", "compose", "-f", DOCKER_COMPOSE_FILE, "exec", "-T", "postgres", 
+         "psql", "-U", "admin", "-d", "chatwithoats", "-t", "-c", query],
+        check=True,
         text=True,
-        check=True
+        capture_output=True
     )
     return result.stdout.strip()
 
@@ -23,65 +25,55 @@ class DatabaseTest(unittest.TestCase):
     """
     Database tests for ChatWithOats backend.
     
-    These tests verify that the database connection works and that
-    required tables exist.
+    These tests verify:
+    1. Database connectivity
+    2. Table existence and structure
+    3. Schema correctness
     """
     
     def test_01_database_connection(self):
         """Test basic database connection"""
         result = run_sql("SELECT 'DB Connection Test' AS result;")
         self.assertIn("DB Connection Test", result, "Database connection failed")
+        
         print("✓ Database connection successful")
     
     def test_02_required_tables_exist(self):
         """Test that required tables exist in the database"""
         required_tables = [
-            'portal_users', 
-            'chat_settings', 
+            'portal_users',
+            'chat_settings',
             'conversations',
             'tools',
-            'messages'  # Instead of chat_messages
+            'messages',  # Instead of chat_messages
+            'apis',
+            'api_requests',
+            'chat_settings_tools'
         ]
         
         tables_json = run_sql("""
-            SELECT json_agg(table_name) 
-            FROM information_schema.tables 
+            SELECT json_agg(table_name)
+            FROM information_schema.tables
             WHERE table_schema = 'public'
             AND table_type = 'BASE TABLE';
         """)
         
-        # Strip any whitespace and extract the JSON array
-        tables_json = tables_json.strip()
+        # Parse JSON result
+        tables = json.loads(tables_json)
         
-        # The command might return brackets on separate lines, fix that
-        if not tables_json.startswith('['):
-            tables_json = tables_json.replace('\n', '')
-            # Find the first [ and last ]
-            start = tables_json.find('[')
-            end = tables_json.rfind(']') + 1
-            if start >= 0 and end > start:
-                tables_json = tables_json[start:end]
-        
-        try:
-            existing_tables = json.loads(tables_json)
-        except json.JSONDecodeError:
-            self.fail(f"Failed to parse tables JSON: {tables_json}")
-            
-        # Convert to lowercase for case-insensitive comparison
-        existing_tables = [t.lower() for t in existing_tables if t]
-        
+        # Check if all required tables exist
         for table in required_tables:
-            self.assertIn(table.lower(), existing_tables, f"Required table '{table}' does not exist")
+            self.assertIn(table, tables, f"Required table '{table}' not found in database")
         
-        print(f"✓ All required tables exist: {', '.join(required_tables)}")
+        print(f"✓ All {len(required_tables)} required tables exist")
     
     def test_03_key_tables_columns(self):
         """Test that key tables have expected columns"""
         table_columns = {
-            'chat_settings': ['id', 'name', 'description', 'system_prompt'],
-            'conversations': ['chatid', 'name', 'is_group', 'chat_settings_id'],
-            'tools': ['id', 'name', 'description', 'type', 'configuration'],
-            'messages': ['id', 'chatid', 'content', 'role']
+            'chat_settings': ['id', 'name', 'description', 'system_prompt', 'model'],
+            'conversations': ['chatid', 'name', 'is_group', 'chat_settings_id', 'source_type'],
+            'tools': ['id', 'name', 'description', 'type', 'tool_type', 'api_request_id', 'function_schema', 'configuration'],
+            'messages': ['id', 'chatid', 'content', 'role', 'sender', 'type']
         }
         
         for table, expected_columns in table_columns.items():
@@ -92,28 +84,52 @@ class DatabaseTest(unittest.TestCase):
                 AND table_name = '{table}';
             """)
             
-            # Clean up the JSON
-            columns_json = columns_json.strip()
-            if not columns_json.startswith('['):
-                columns_json = columns_json.replace('\n', '')
-                start = columns_json.find('[')
-                end = columns_json.rfind(']') + 1
-                if start >= 0 and end > start:
-                    columns_json = columns_json[start:end]
+            # Parse JSON result
+            columns = json.loads(columns_json)
             
-            try:
-                existing_columns = json.loads(columns_json)
-            except json.JSONDecodeError:
-                self.fail(f"Failed to parse columns JSON for {table}: {columns_json}")
-                
-            # Convert to lowercase for case-insensitive comparison
-            existing_columns = [c.lower() for c in existing_columns if c]
+            # Check if all expected columns exist
+            for col in expected_columns:
+                self.assertIn(col, columns, f"Expected column '{col}' not found in table '{table}'")
             
-            for column in expected_columns:
-                self.assertIn(column.lower(), existing_columns, 
-                             f"Required column '{column}' not found in table '{table}'")
-            
-            print(f"✓ Table '{table}' has all required columns: {', '.join(expected_columns)}")
+            print(f"✓ Table '{table}' has all expected columns")
+    
+    def test_04_check_tools_columns(self):
+        """Test that the tools table has the correct structure"""
+        # Get the tool_type column
+        column_info = run_sql("""
+            SELECT 
+                column_name, 
+                data_type, 
+                is_nullable
+            FROM 
+                information_schema.columns
+            WHERE 
+                table_schema = 'public'
+                AND table_name = 'tools'
+                AND column_name = 'tool_type';
+        """)
+        
+        # Check that the tool_type column exists
+        self.assertIn("tool_type", column_info, "tools table missing tool_type column")
+        
+        # Get the api_request_id column
+        column_info = run_sql("""
+            SELECT 
+                column_name, 
+                data_type, 
+                is_nullable
+            FROM 
+                information_schema.columns
+            WHERE 
+                table_schema = 'public'
+                AND table_name = 'tools'
+                AND column_name = 'api_request_id';
+        """)
+        
+        # Check that the api_request_id column exists
+        self.assertIn("api_request_id", column_info, "tools table missing api_request_id column")
+        
+        print("✓ Tools table has correct structure")
 
 if __name__ == "__main__":
     unittest.main() 

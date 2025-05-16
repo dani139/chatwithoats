@@ -26,6 +26,11 @@ class ToolType(str, Enum):
     FUNCTION = "function"
     WEB_SEARCH = "web_search_preview"
     FILE_SEARCH = "file_search"
+    
+    # String constants for consistent type references
+    FUNCTION_STR = "function"
+    WEB_SEARCH_STR = "web_search_preview"
+    FILE_SEARCH_STR = "file_search"
 
 # Association table for ChatSettings to Tools many-to-many relationship
 chat_settings_tools = Table(

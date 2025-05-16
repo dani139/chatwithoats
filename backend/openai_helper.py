@@ -257,21 +257,48 @@ class OpenAIHelper:
                                 logger.warning(f"API request not found for tool: {tool.id}")
                                 continue
                             
-                            # Build function schema from API request
-                            function_def = {
-                                "type": "function",
-                                "function": {
-                                    "name": tool.name,
+                            # Make a deep copy to avoid modifying the original
+                            function_def = {"type": "function"}
+                            
+                            # Check if we already have a complete function schema
+                            if tool.function_schema and isinstance(tool.function_schema, dict):
+                                function_schema = tool.function_schema.copy()
+                                
+                                # Ensure required name field exists
+                                if "name" not in function_schema:
+                                    function_schema["name"] = tool.name
+                                
+                                # Ensure description exists
+                                if "description" not in function_schema and tool.description:
+                                    function_schema["description"] = tool.description
+                                
+                                function_def["function"] = function_schema
+                            else:
+                                # Build function schema from API request
+                                function_def["function"] = {
+                                    "name": tool.name or f"{api_request.method.lower()}_{api_request.path.replace('/', '_')}",
                                     "description": tool.description or api_request.description or f"Call {api_request.path}",
                                     "parameters": self._build_parameters_from_api_request(api_request)
                                 }
-                            }
                             openai_tools.append(function_def)
                         elif tool.function_schema:
                             # Custom function tool with direct schema
+                            # Make a deep copy to avoid modifying the original
+                            function_schema = tool.function_schema.copy() if isinstance(tool.function_schema, dict) else {}
+                            
+                            # Ensure the schema has name and description fields
+                            if "name" not in function_schema:
+                                function_schema["name"] = tool.name
+                            if "description" not in function_schema and tool.description:
+                                function_schema["description"] = tool.description
+                            
+                            # Ensure parameters field exists
+                            if "parameters" not in function_schema:
+                                function_schema["parameters"] = {"type": "object", "properties": {}, "required": []}
+                                
                             function_def = {
                                 "type": "function",
-                                "function": tool.function_schema
+                                "function": function_schema
                             }
                             openai_tools.append(function_def)
                         else:
@@ -288,8 +315,8 @@ class OpenAIHelper:
                 
                 # Backward compatibility for old tool structure
                 else:
-                    config = tool.configuration
-                    if tool.type == ToolType.OPENAI_TOOL:
+                    config = tool.configuration or {}
+                    if "type" in config:
                         config_type = config.get("type")
                         if config_type in ["web_search", "web_search_preview"]:
                             ws_tool = {"type": "web_search_preview"}
@@ -299,14 +326,24 @@ class OpenAIHelper:
                                 ws_tool["search_context_size"] = config["search_context_size"]
                             openai_tools.append(ws_tool)
                         elif config_type == "function":
-                            openai_tools.append(config)
+                            # Ensure the function config has a name
+                            if "function" in config and isinstance(config["function"], dict):
+                                if "name" not in config["function"]:
+                                    config_copy = config.copy()
+                                    config_copy["function"] = config["function"].copy()
+                                    config_copy["function"]["name"] = tool.name
+                                    openai_tools.append(config_copy)
+                                else:
+                                    openai_tools.append(config)
+                            else:
+                                openai_tools.append(config)
                     elif tool.type == "function":
                         function_def = {
                             "type": "function",
                             "function": {
                                 "name": tool.name,
-                                "description": tool.description,
-                                "parameters": config.get("parameters", {})
+                                "description": tool.description or "Function tool",
+                                "parameters": config.get("parameters", {"type": "object", "properties": {}, "required": []})
                             }
                         }
                         openai_tools.append(function_def)
@@ -695,12 +732,16 @@ class OpenAIHelper:
         if not tool:
             return "Tool not found."
         
-        # Execute the appropriate tool based on its type
-        if tool.type == ToolType.API_TOOL:
+        # Check if this is an API-linked function
+        if tool.api_request_id:
             return await self.execute_api_tool(tool, function_args)
-        # Add more tool type handlers as needed
         
-        return "Unsupported tool type."
+        # Handle based on tool_type
+        if tool.tool_type == ToolType.FUNCTION:
+            # For function tools without API links, we would implement custom logic here
+            return f"Executed function {function_name} with args {function_args}. This is a placeholder response."
+        
+        return f"Unsupported tool type: {tool.tool_type}"
 
 # Create a singleton instance of OpenAIHelper
 # Read the API key directly from the .env file to bypass any environment caching issues

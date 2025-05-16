@@ -110,8 +110,8 @@ class OpenAIToolsTest(unittest.TestCase):
         
         return settings_id, tool_id
     
-    def test_02_import_openapi_and_create_api_tool(self):
-        """Test importing OpenAPI spec and creating a function tool linked to an API request"""
+    def test_02_import_openapi_and_explicitly_create_api_tool(self):
+        """Test importing OpenAPI spec and then explicitly creating a function tool from an API request"""
         # Import the OpenAI OpenAPI spec
         openapi_file_path = "openapi.json"
         
@@ -126,23 +126,52 @@ class OpenAIToolsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, f"Failed to import OpenAPI spec: {response.text}")
         
         result = response.json()
-        self.assertGreater(result["tools_created"], 0, "No tools were created from the OpenAPI spec")
+        self.assertGreater(result["api_requests_created"], 0, "No API requests were created from the OpenAPI spec")
         
-        # Record the created tools for cleanup
-        for tool in result["tools"]:
-            self.tool_ids.append(tool["id"])
+        print(f"✓ Imported OpenAPI spec and created {result['api_requests_created']} API requests")
         
-        print(f"✓ Imported OpenAPI spec and created {result['tools_created']} tools")
+        # Get API requests to find a speech-related one
+        response = requests.get(f"{BASE_URL}/api-requests")
+        self.assertEqual(response.status_code, 200, f"Failed to get API requests: {response.text}")
         
-        # Select a speech API tool to test with
-        speech_tool = None
-        for tool in result["tools"]:
-            if "speech" in tool["name"].lower() or "tts" in tool["name"].lower():
-                speech_tool = tool
+        api_requests = response.json()
+        self.assertGreater(len(api_requests), 0, "No API requests found")
+        
+        # Find a speech-related API request
+        speech_api_request = None
+        for req in api_requests:
+            path = req.get("path", "").lower()
+            description = req.get("description", "").lower()
+            if "speech" in path or "tts" in description or "speak" in description or "audio" in path:
+                speech_api_request = req
                 break
         
-        if not speech_tool:
-            self.skipTest("No speech API tool found in imported tools")
+        if not speech_api_request:
+            self.skipTest("No speech-related API request found")
+        
+        print(f"✓ Found speech-related API request: {speech_api_request.get('path')}")
+        
+        # Explicitly create a tool from the API request
+        tool_data = {
+            "name": "text_to_speech_tool",
+            "description": "Generate speech from text using OpenAI API",
+            "tool_type": "function",
+            "api_request_id": speech_api_request["id"]
+        }
+        
+        response = requests.post(f"{BASE_URL}/tools", json=tool_data)
+        self.assertEqual(response.status_code, 200, f"Failed to create tool from API request: {response.text}")
+        
+        speech_tool = response.json()
+        speech_tool_id = speech_tool["id"]
+        self.tool_ids.append(speech_tool_id)
+        
+        print(f"✓ Explicitly created tool from API request: {speech_tool['name']}")
+        
+        # Verify the tool was created with proper schema
+        self.assertEqual(speech_tool["name"], "text_to_speech_tool")
+        self.assertEqual(speech_tool["api_request_id"], speech_api_request["id"])
+        self.assertIsNotNone(speech_tool["function_schema"], "Tool should have a function schema")
         
         # Create chat settings
         settings_data = {
@@ -159,7 +188,7 @@ class OpenAIToolsTest(unittest.TestCase):
         self.chat_settings_ids.append(settings_id)
         
         # Add the speech tool to the chat settings
-        response = requests.post(f"{BASE_URL}/chat-settings/{settings_id}/tools/{speech_tool['id']}")
+        response = requests.post(f"{BASE_URL}/chat-settings/{settings_id}/tools/{speech_tool_id}")
         self.assertEqual(response.status_code, 200, f"Failed to add tool to chat settings: {response.text}")
         
         # Get the OpenAI tools format
@@ -182,9 +211,9 @@ class OpenAIToolsTest(unittest.TestCase):
         self.assertEqual(parameters["type"], "object", "Parameters schema should be of type 'object'")
         self.assertIn("properties", parameters, "Parameters schema missing 'properties'")
         
-        print(f"✓ Speech API tool correctly formatted for OpenAI API")
+        print(f"✓ Custom speech API tool correctly formatted for OpenAI API")
         
-        return settings_id, speech_tool["id"]
+        return settings_id, speech_tool_id
     
     def test_03_create_custom_function_tool(self):
         """Test creating a custom function tool with a direct function schema"""
@@ -388,7 +417,7 @@ class OpenAIToolsTest(unittest.TestCase):
     def test_05_use_imported_api_tool(self):
         """Test using an imported API tool from OpenAPI spec"""
         # First import the OpenAPI spec and create the API tool
-        settings_id, speech_tool_id = self.test_02_import_openapi_and_create_api_tool()
+        settings_id, speech_tool_id = self.test_02_import_openapi_and_explicitly_create_api_tool()
         
         # Create a conversation with this chat settings
         data = {
@@ -497,6 +526,111 @@ class OpenAIToolsTest(unittest.TestCase):
         print(f"✓ API tool test completed")
         
         return conversation_id
+
+    def test_06_create_api_linked_tool(self):
+        """Test creating a tool linked to an API request with proper name handling"""
+        # First import the OpenAPI spec to get API requests
+        settings_id, created_tool_id = self.test_02_import_openapi_and_explicitly_create_api_tool()
+        
+        # Get API requests to find a different one than we used previously
+        response = requests.get(f"{BASE_URL}/api-requests")
+        self.assertEqual(response.status_code, 200, f"Failed to get API requests: {response.text}")
+        
+        api_requests = response.json()
+        self.assertGreater(len(api_requests), 0, "No API requests found")
+        
+        # Find an API request different from the one we used for the speech tool
+        # We'll look for one with 'chat' or 'completions' in the path
+        api_request = None
+        for req in api_requests:
+            path = req.get("path", "").lower()
+            if ("chat" in path or "completions" in path) and "speech" not in path:
+                api_request = req
+                break
+                
+        # If we didn't find a chat/completions endpoint, just use any non-speech one
+        if not api_request:
+            for req in api_requests:
+                path = req.get("path", "").lower()
+                if "speech" not in path and "audio" not in path:
+                    api_request = req
+                    break
+                    
+        # If we still didn't find one, just use the first one
+        if not api_request:
+            api_request = api_requests[0]
+            
+        self.assertIsNotNone(api_request, "No suitable API request found")
+        api_request_id = api_request["id"]
+        
+        print(f"✓ Found API request for tool creation: {api_request.get('path')}")
+        
+        # Create a tool linked to this API request but with empty name
+        # to test name auto-generation
+        data = {
+            "name": "",  # Provide an empty name to test auto-generation
+            "tool_type": "function",
+            "api_request_id": api_request_id
+        }
+        
+        response = requests.post(f"{BASE_URL}/tools", json=data)
+        self.assertEqual(response.status_code, 200, f"Failed to create API-linked tool: {response.text}")
+        
+        tool = response.json()
+        tool_id = tool["id"]
+        self.tool_ids.append(tool_id)
+        
+        # Verify the tool has a name derived from the API request
+        self.assertIsNotNone(tool["name"], "Tool should have a name")
+        self.assertNotEqual(tool["name"], "", "Tool name should not be empty")
+        self.assertIsNotNone(tool["description"], "Tool should have a description")
+        
+        # Verify function schema has required fields
+        self.assertIsNotNone(tool["function_schema"], "Tool should have a function schema")
+        self.assertIn("name", tool["function_schema"], "Function schema should have a name field")
+        self.assertIn("description", tool["function_schema"], "Function schema should have a description field")
+        self.assertIn("parameters", tool["function_schema"], "Function schema should have parameters")
+        
+        print(f"✓ Created API-linked tool with auto-generated name: {tool['name']}")
+        
+        # Create a chat settings and add the tool
+        settings_data = {
+            "name": "Test Settings with API-linked Tool",
+            "description": "Chat settings for testing API-linked tool",
+            "system_prompt": "You are a helpful assistant."
+        }
+        
+        response = requests.post(f"{BASE_URL}/chat-settings", json=settings_data)
+        self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
+        
+        chat_settings = response.json()
+        settings_id = chat_settings["id"]
+        self.chat_settings_ids.append(settings_id)
+        
+        # Add the tool to chat settings
+        response = requests.post(f"{BASE_URL}/chat-settings/{settings_id}/tools/{tool_id}")
+        self.assertEqual(response.status_code, 200, f"Failed to add tool to chat settings: {response.text}")
+        
+        # Get the OpenAI tools format
+        response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/openai-tools")
+        self.assertEqual(response.status_code, 200, f"Failed to get OpenAI tools: {response.text}")
+        
+        openai_tools = response.json()
+        self.assertEqual(len(openai_tools), 1, f"Expected 1 tool but found: {len(openai_tools)}")
+        
+        # Verify the OpenAI tool format
+        openai_tool = openai_tools[0]
+        self.assertEqual(openai_tool["type"], "function", f"Expected function tool but got: {openai_tool['type']}")
+        
+        # Verify function fields
+        function = openai_tool["function"]
+        self.assertIn("name", function, "OpenAI function should have a name field")
+        self.assertIn("description", function, "OpenAI function should have a description field")
+        self.assertIn("parameters", function, "OpenAI function should have parameters")
+        
+        print(f"✓ API-linked tool correctly formatted for OpenAI with name: {function['name']}")
+        
+        return settings_id, tool_id
 
 if __name__ == "__main__":
     unittest.main() 

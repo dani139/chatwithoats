@@ -37,8 +37,8 @@ class APITest(unittest.TestCase):
         data = {
             "name": "Test Settings - No Tools",
             "description": "Chat settings without any tools",
-            "system_prompt": "You are a helpful assistant.",
-            "enabled_tools": []
+            "system_prompt": "You are a helpful assistant."
+            # enabled_tools field removed as it's no longer used
         }
         response = requests.post(f"{BASE_URL}/chat-settings", json=data)
         self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
@@ -47,9 +47,12 @@ class APITest(unittest.TestCase):
         settings_id = chat_settings["id"]
         self.chat_settings_ids.append(settings_id)
         
-        # Verify no tools are enabled
-        self.assertEqual(len(chat_settings["enabled_tools"]), 0, 
-                        f"Expected no tools but found: {chat_settings['enabled_tools']}")
+        # Get tools via the tools endpoint rather than enabled_tools field
+        response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/tools")
+        self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
+        
+        tools = response.json()
+        self.assertEqual(len(tools), 0, f"Expected no tools but found: {tools}")
         
         print(f"✓ Created chat settings without tools (ID: {settings_id})")
         return settings_id
@@ -60,8 +63,8 @@ class APITest(unittest.TestCase):
         data = {
             "name": "Test Settings - Second Instance",
             "description": "Another chat settings instance for testing",
-            "system_prompt": "You are a helpful assistant.",
-            "enabled_tools": []
+            "system_prompt": "You are a helpful assistant."
+            # enabled_tools field removed as it's no longer used
         }
         response = requests.post(f"{BASE_URL}/chat-settings", json=data)
         self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
@@ -70,9 +73,12 @@ class APITest(unittest.TestCase):
         settings_id = chat_settings["id"]
         self.chat_settings_ids.append(settings_id)
         
-        # Since we're not auto-adding web search anymore, verify no tools are enabled
-        self.assertEqual(len(chat_settings["enabled_tools"]), 0, 
-                        f"Expected 0 tools but found: {len(chat_settings['enabled_tools'])}")
+        # Get tools via the tools endpoint rather than enabled_tools field
+        response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/tools")
+        self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
+        
+        tools = response.json()
+        self.assertEqual(len(tools), 0, f"Expected 0 tools but found: {len(tools)}")
         
         # Get the OpenAI tools format - should be empty
         response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/openai-tools")
@@ -198,12 +204,12 @@ class APITest(unittest.TestCase):
     
     def test_06_send_knowledge_based_message(self):
         """Test sending a message that requires general knowledge"""
-        # Create chat settings
+        # Create second chat settings
         settings_id = self.test_02_create_chat_settings_second()
         
         # Create conversation
         data = {
-            "name": "Test Knowledge Query",
+            "name": "Test Knowledge-Based Message",
             "is_group": False,
             "chat_settings_id": settings_id,
             "participants": ["test_user"],
@@ -215,9 +221,9 @@ class APITest(unittest.TestCase):
         conversation_id = response.json()["chatid"]
         self.conversation_ids.append(conversation_id)
         
-        # Send message requiring general knowledge
+        # Send message that requires general knowledge
         data = {
-            "content": "Who wrote Pride and Prejudice?",
+            "content": "What is the capital of France?",
             "user_id": "test123",
             "username": "tester"
         }
@@ -228,60 +234,13 @@ class APITest(unittest.TestCase):
         self.assertIn("response_text", result, "Response doesn't contain response_text")
         self.assertNotIn("error", result["response_text"].lower(), "Response contains error")
         
-        # Response should mention Jane Austen
-        self.assertIn("jane austen", result["response_text"].lower(), 
-                     f"Expected answer about Jane Austen but got: {result['response_text'][:100]}...")
+        # Response should mention Paris
+        self.assertIn("Paris", result["response_text"], 
+                    f"Expected answer with 'Paris' but got: {result['response_text']}")
         
-        print(f"✓ Knowledge-based query test passed: {result['response_text'][:20]}...")
-    
-    # def test_07_test_speech_api(self):
-    #     """Test the speech API tool directly"""
-    #     # Get the speech tool ID
-    #     response = requests.get(f"{BASE_URL}/tools")
-    #     self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
-    #     
-    #     tools = response.json()
-    #     speech_tool_id = None
-    #     for tool in tools:
-    #         if tool["name"] == "text_to_speech" or "speech" in tool["name"].lower():
-    #             speech_tool_id = tool["id"]
-    #             break
-    #     
-    #     self.assertIsNotNone(speech_tool_id, "No speech tool found")
-    #     
-    #     # Execute speech tool directly
-    #     data = {
-    #         "tool_id": speech_tool_id,
-    #         "arguments": {
-    #             "model": "tts-1",
-    #             "input": "This is a test of the speech API integration.",
-    #             "voice": "alloy"
-    #         }
-    #     }
-    #     
-    #     # Use binary output to file
-    #     response = requests.post(
-    #         f"{BASE_URL}/tools/execute", 
-    #         json=data,
-    #         stream=True
-    #     )
-    #     self.assertEqual(response.status_code, 200, f"Failed to execute speech tool: {response.text}")
-    #     
-    #     # If successful, the response will either be binary audio data or a success message
-    #     if response.headers.get('content-type') == 'audio/mpeg':
-    #         # Save to file
-    #         with open("test_speech_output.mp3", "wb") as f:
-    #             for chunk in response.iter_content(chunk_size=128):
-    #                 f.write(chunk)
-    #         self.assertTrue(os.path.exists("test_speech_output.mp3"), "Speech output file not created")
-    #         self.assertTrue(os.path.getsize("test_speech_output.mp3") > 0, "Speech output file is empty")
-    #         print(f"✓ Speech API test passed: Generated audio file (test_speech_output.mp3)")
-    #     else:
-    #         # Text response indicating success
-    #         self.assertIn("audio", response.text.lower(), 
-    #                     f"Expected audio success message but got: {response.text}")
-    #         print(f"✓ Speech API test passed: {response.text[:50]}...")
+        print(f"✓ Knowledge-based message test passed: {result['response_text'][:20]}...")
 
+# Add other test classes here if needed
 
 if __name__ == "__main__":
     unittest.main() 
