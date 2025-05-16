@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from db import get_db
 from models import Conversation, ConversationParticipant, ConversationCreate, ConversationResponse, ChatSettings, ChatSettingsCreate, ChatSettingsResponse, Message, MessageType, SourceType
-from openai_helper import get_openai_response
+from openai_helper import openai_helper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -314,7 +314,7 @@ async def add_portal_message(
     logger.info(f"Added portal message with ID: {message_id} to conversation: {conversation_id}")
     
     # Get response from OpenAI
-    response_text = await get_openai_response(conversation, user_message, db)
+    response_text = await openai_helper.get_openai_response(conversation, user_message, db)
     
     # Create assistant message
     assistant_message_id = str(uuid.uuid4())

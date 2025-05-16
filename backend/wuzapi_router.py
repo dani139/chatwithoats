@@ -13,7 +13,7 @@ import uuid
 from db import get_db
 from models import Conversation, ConversationParticipant, ConversationCreate, SourceType, Message, MessageType, ChatSettings
 from chat_settings_router import get_or_create_web_search_tool
-from openai_helper import get_openai_response
+from openai_helper import openai_helper
 
 # Configure basic logging
 logger = logging.getLogger(__name__)
@@ -485,7 +485,7 @@ async def handle_new_message(chat_id: str, sender_jid: str, sender_name: str, me
         await wuzapi_handler.set_chat_presence(chat_id, "composing")
         
         # Get response from OpenAI
-        response_text = await get_openai_response(conversation, user_message, db)
+        response_text = await openai_helper.get_openai_response(conversation, user_message, db)
         
         # Store the assistant's response
         assistant_message_id = str(uuid.uuid4())
@@ -770,7 +770,7 @@ async def test_openai_response(message: MessageRequest, db: Session = Depends(ge
         await handler.set_chat_presence(message.chat_id, "composing")
         
         # Get response from OpenAI
-        response_text = await get_openai_response(conversation, user_message, db)
+        response_text = await openai_helper.get_openai_response(conversation, user_message, db)
         
         # Test sending the response via WuzAPI
         logger.info(f"Sending response to WhatsApp: {message.chat_id}")

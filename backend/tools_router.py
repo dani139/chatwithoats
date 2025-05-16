@@ -10,87 +10,10 @@ from pydantic import BaseModel
 
 from db import get_db
 from models import Tool, ToolCreate, ToolUpdate, ToolResponse, ChatSettings, ToolType, ApiToolConfig, OpenAIToolConfig, MessageToolConfig, Conversation
+from openai_helper import openai_helper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-def format_tools_for_openai(tools: List[Tool]) -> List[Dict[str, Any]]:
-    """
-    Format tools into the structure expected by the OpenAI API
-    
-    Args:
-        tools: List of Tool objects
-        
-    Returns:
-        List of dictionaries formatted for OpenAI API
-    """
-    openai_tools = []
-    logger.info(f"Formatting {len(tools)} tools for OpenAI")
-    
-    for tool in tools:
-        try:
-            config = tool.configuration
-            
-            if tool.type == ToolType.OPENAI_TOOL:
-                config_type = config.get("type")
-                if config_type in ["web_search", "web_search_preview"]:
-                    ws_tool = {"type": "web_search_preview"}
-                    if "user_location" in config:
-                        ws_tool["user_location"] = config["user_location"]
-                    if "search_context_size" in config:
-                        ws_tool["search_context_size"] = config["search_context_size"]
-                    openai_tools.append(ws_tool)
-                elif "type" in config:
-                    openai_tools.append({"type": config["type"]})
-                
-            elif tool.type == ToolType.API_TOOL:
-                # Convert API tools to function tools
-                parameters = {"type": "object", "properties": {}, "required": []}
-                
-                # Process query parameters
-                for param_name, param_info in config.get("params", {}).items():
-                    parameters["properties"][param_name] = param_info.get("schema", {})
-                    if "description" in param_info:
-                        parameters["properties"][param_name]["description"] = param_info["description"]
-                    if param_info.get("required", False):
-                        parameters["required"].append(param_name)
-                
-                # Process body schema parameters
-                body_schema = config.get("body_schema", {})
-                if isinstance(body_schema, dict):
-                    # Add properties from body schema
-                    for prop_name, prop_schema in body_schema.get("properties", {}).items():
-                        parameters["properties"][prop_name] = prop_schema
-                    
-                    # Add required fields
-                    for req_field in body_schema.get("required", []):
-                        if req_field not in parameters["required"]:
-                            parameters["required"].append(req_field)
-                
-                # Use tool's name directly, just ensure it's valid
-                import re
-                clean_name = re.sub(r'[^a-zA-Z0-9_-]', '', tool.name.replace(" ", "_").lower())
-                
-                # Get endpoint info
-                endpoint = config.get("endpoint", "")
-                server_url = config.get("server_url", "")
-                method = config.get("method", "GET")
-                full_endpoint = f"{server_url}{endpoint}" if server_url else endpoint
-                
-                function_tool = {
-                    "type": "function",
-                    "name": clean_name,
-                    "description": tool.description or f"{method} {full_endpoint}",
-                    "parameters": parameters
-                }
-                
-                openai_tools.append(function_tool)
-                
-        except Exception as e:
-            logger.error(f"Error processing tool {tool.id} - {tool.name}: {str(e)}")
-    
-    logger.info(f"Returning {len(openai_tools)} formatted tools")
-    return openai_tools
 
 # Tool CRUD operations
 @router.post("/tools", response_model=ToolResponse)
@@ -234,25 +157,30 @@ async def get_tools_for_chat_settings(settings_id: str, db: Session = Depends(ge
     logger.info(f"Fetched {len(tools)} tools for chat settings {settings_id}")
     return tools
 
-@router.get("/chat-settings/{settings_id}/openai-tools")
-async def get_openai_tools_for_chat_settings(settings_id: str, db: Session = Depends(get_db)):
+@router.get("/chat-settings/{chat_id}/openai-tools", response_model=List[Dict[str, Any]])
+def get_openai_tools_for_chat(chat_id: str, db: Session = Depends(get_db)):
     """
-    Get tools associated with chat settings, formatted for OpenAI API
+    Get formatted OpenAI tools for a chat settings.
+    
+    Args:
+        chat_id: The chat settings ID
+        
+    Returns:
+        List of formatted tools
     """
-    # Check if chat settings exists
-    chat_settings = db.query(ChatSettings).filter(ChatSettings.id == settings_id).first()
+    # Find the chat settings
+    chat_settings = db.query(ChatSettings).filter(ChatSettings.id == chat_id).first()
     if not chat_settings:
-        logger.warning(f"Chat settings with ID {settings_id} not found.")
-        raise HTTPException(status_code=404, detail="Chat settings not found")
+        raise HTTPException(status_code=404, detail=f"Chat settings with ID {chat_id} not found")
     
-    # Get tools associated with the chat settings
-    tools = chat_settings.tools
+    # Format the tools for OpenAI
+    tools = []
+    if chat_settings.tools:
+        logger.info(f"Formatting {len(chat_settings.tools)} tools for OpenAI")
+        tools = openai_helper.format_tools_for_openai(chat_settings.tools)
     
-    # Filter for OpenAI tools only and format them
-    openai_tools = format_tools_for_openai(tools)
-    
-    logger.info(f"Formatted {len(openai_tools)} OpenAI tools for chat settings {settings_id}")
-    return openai_tools
+    logger.info(f"Formatted {len(tools)} OpenAI tools for chat settings {chat_id}")
+    return tools
 
 @router.put("/chat-settings/{settings_id}/tools", response_model=List[ToolResponse])
 async def update_tools_for_chat_settings(
@@ -975,12 +903,10 @@ async def execute_tool(request: ToolExecuteRequest, db: Session = Depends(get_db
     
     logger.info(f"Executing tool {tool.name} ({tool.id})")
     
-    # Import here to avoid circular imports
-    from openai_helper import execute_api_tool
-    
     # Execute the tool based on its type
     if tool.type == ToolType.API_TOOL:
-        result = await execute_api_tool(tool, request.arguments)
-        return result
+        # Execute the API tool
+        result_data = await openai_helper.execute_api_tool(tool, request.arguments)
+        return {"result": result_data}
     else:
         raise HTTPException(status_code=400, detail=f"Tool type {tool.type} cannot be executed directly") 
