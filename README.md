@@ -13,10 +13,11 @@ For instructions on setting up, administering, and pairing the WuzAPI service, r
 For information about the backend API, database models, and WhatsApp integration, see the [Backend Documentation](backend/README.md).
 
 ## Future
+
 make sure web_search works, and also speech. 
 
-users will have link to default chat settings for them, later on. no needed for now.
-start with the fancy responses one so internent tool can be used and tested because thats cool.
-and then also offer completion, maybe diff endpoint, or flag. 
-then have message endpoint use it.
+add user login, have flow withouth gmail. but maybe impl together with gmail oath.
+
+implement database idea
+implement ui elements idea
 

@@ -208,6 +208,8 @@ class OpenAIToolConfig(BaseModel):
     name: Optional[str] = None  # Required for function type
     description: Optional[str] = None  # Required for function type
     parameters: Optional[Dict[str, Any]] = None  # Required for function type
+    user_location: Optional[Dict[str, Any]] = None  # For web_search_preview
+    search_context_size: Optional[str] = None  # For web_search_preview
 
 class MessageToolConfig(BaseModel):
     action: str

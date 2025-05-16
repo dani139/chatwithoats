@@ -32,8 +32,15 @@ def format_tools_for_openai(tools: List[Tool]) -> List[Dict[str, Any]]:
             config = tool.configuration
             
             if tool.type == ToolType.OPENAI_TOOL:
-                # For OpenAI native tools, just use the type directly
-                if "type" in config:
+                config_type = config.get("type")
+                if config_type in ["web_search", "web_search_preview"]:
+                    ws_tool = {"type": "web_search_preview"}
+                    if "user_location" in config:
+                        ws_tool["user_location"] = config["user_location"]
+                    if "search_context_size" in config:
+                        ws_tool["search_context_size"] = config["search_context_size"]
+                    openai_tools.append(ws_tool)
+                elif "type" in config:
                     openai_tools.append({"type": config["type"]})
                 
             elif tool.type == ToolType.API_TOOL:

@@ -37,7 +37,6 @@ class ToolsIntegrationTest(unittest.TestCase):
             "name": "Test Settings - No Tools",
             "description": "Chat settings without any tools",
             "system_prompt": "You are a helpful assistant.",
-            "model": "gpt-4o-mini",
             "enabled_tools": []
         }
         response = requests.post(f"{BASE_URL}/chat-settings?add_web_search=false", json=data)
@@ -61,7 +60,6 @@ class ToolsIntegrationTest(unittest.TestCase):
             "name": "Test Settings - Web Search",
             "description": "Chat settings with web search",
             "system_prompt": "You are a helpful assistant.",
-            "model": "gpt-4o-mini",
             "enabled_tools": []
         }
         response = requests.post(f"{BASE_URL}/chat-settings", json=data)
@@ -81,8 +79,8 @@ class ToolsIntegrationTest(unittest.TestCase):
         
         tools = response.json()
         self.assertEqual(len(tools), 1, f"Expected 1 tool but found: {len(tools)}")
-        self.assertEqual(tools[0]["type"], "web_search", 
-                        f"Expected web_search tool but found: {tools[0]}")
+        self.assertEqual(tools[0]["type"], "web_search_preview",
+                         f"Expected web_search_preview tool but found: {tools[0]}")
         
         print(f"✓ Created chat settings with web search (ID: {settings_id})")
         return settings_id
@@ -94,7 +92,6 @@ class ToolsIntegrationTest(unittest.TestCase):
             "name": "Test Settings - Web Search & Speech",
             "description": "Chat settings with web search and speech",
             "system_prompt": "You are a helpful assistant.",
-            "model": "gpt-4o-mini",
             "enabled_tools": []
         }
         response = requests.post(f"{BASE_URL}/chat-settings", json=data)
@@ -130,7 +127,7 @@ class ToolsIntegrationTest(unittest.TestCase):
         
         # Verify tool types
         tool_types = [tool["type"] for tool in tools]
-        self.assertIn("web_search", tool_types, "Web search tool not found")
+        self.assertIn("web_search_preview", tool_types, "Web search tool not found")
         self.assertIn("function", tool_types, "Function tool (speech) not found")
         
         print(f"✓ Created chat settings with web search and speech (ID: {settings_id})")

@@ -12,8 +12,12 @@ from tools_router import format_tools_for_openai
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Hardcoded OpenAI API key (DO NOT COMMIT TO PUBLIC REPOS)
+OPENAI_API_KEY = "sk-proj-n9MbqjhS3RjoO0UCIoaWT3BlbkFJ8Bkdi74OIe6TujxP2xvy"
+
+masked_key = OPENAI_API_KEY[:6] + "..." if OPENAI_API_KEY else "NOT SET"
+logger.info(f"[OpenAI Helper] Initializing OpenAI client with key: {masked_key}")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 async def get_openai_response(
     conversation: Conversation, 
@@ -112,7 +116,8 @@ async def get_openai_response(
             logger.warning(f"No tools found for chat settings {chat_settings.id}")
         
         # Make the API call to OpenAI
-        logger.info(f"Sending request to OpenAI with model: {chat_settings.model}")
+        logger.info(f"[OpenAI Helper] get_openai_response called with model: {chat_settings.model if chat_settings else 'default'} and key: {masked_key}")
+        logger.info(f"[OpenAI Helper] Tool payload: {tools}")
         response = client.responses.create(
             model=chat_settings.model,
             input=formatted_messages,
@@ -220,13 +225,10 @@ async def execute_api_tool(tool: Tool, arguments: Dict[str, Any]) -> str:
         logger.info(f"Params: {params}")
         logger.info(f"Body: {body}")
         
-        # Check if this is an OpenAI API call to add the API key
-        if server_url and "api.openai.com" in server_url:
-            if "Authorization" not in headers:
-                headers["Authorization"] = f"Bearer {os.environ.get('OPENAI_API_KEY')}"
-            
-            if "Content-Type" not in headers:
-                headers["Content-Type"] = "application/json"
+        # Add OpenAI API key if needed
+        if "openai.com" in full_url:
+            logger.info(f"[OpenAI Helper] Setting Authorization header for OpenAI API call with key: {masked_key}")
+            headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
         
         # Make the API request based on method
         async with httpx.AsyncClient() as client:

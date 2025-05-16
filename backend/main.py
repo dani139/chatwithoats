@@ -36,6 +36,9 @@ async def health_check():
 @app.on_event("startup")
 async def startup_db_client():
     logger.info("Starting up the FastAPI application")
+    openai_key = os.environ.get("OPENAI_API_KEY", "NOT SET")
+    masked_key = openai_key[:6] + "..." if openai_key and openai_key != "NOT SET" else openai_key
+    logger.info(f"OPENAI_API_KEY on startup: {masked_key}")
     # Database connection setup happens in the db.py module
 
 # Shutdown event to close database connection

@@ -10,13 +10,17 @@ logger = logging.getLogger(__name__)
 
 def test_openai_tool_formatting():
     """Test the formatting of OpenAI tools"""
-    # Create a test OpenAI tool with web_search type
+    # Create a test OpenAI tool with web_search_preview type and extra config
     web_search_tool = Tool(
         id="test-web-search",
         name="Web Search",
         description="Search the web for information",
         type=ToolType.OPENAI_TOOL,
-        configuration={"type": "web_search"}
+        configuration={
+            "type": "web_search_preview",
+            "user_location": {"type": "approximate", "country": "GB", "city": "London"},
+            "search_context_size": "low"
+        }
     )
     
     # Create a test API tool that will be converted to function type
@@ -62,7 +66,9 @@ def test_openai_tool_formatting():
     assert len(formatted_tools) == 2, f"Expected 2 tools, got {len(formatted_tools)}"
     
     # Check web search tool
-    assert formatted_tools[0]["type"] == "web_search", "Web search tool should have type='web_search'"
+    assert formatted_tools[0]["type"] == "web_search_preview", "Web search tool should have type='web_search_preview'"
+    assert formatted_tools[0]["user_location"] == {"type": "approximate", "country": "GB", "city": "London"}, "user_location should be passed through"
+    assert formatted_tools[0]["search_context_size"] == "low", "search_context_size should be passed through"
     
     # Check API tool converted to function
     assert formatted_tools[1]["type"] == "function", "API tool should be formatted as function"

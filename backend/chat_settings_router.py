@@ -28,7 +28,7 @@ async def get_or_create_web_search_tool(db: Session) -> Tool:
     web_search_tool = None
     
     for tool in openai_tools:
-        if tool.configuration.get('type') == 'web_search':
+        if tool.configuration.get('type') in ['web_search', 'web_search_preview']:
             web_search_tool = tool
             break
     
@@ -43,7 +43,10 @@ async def get_or_create_web_search_tool(db: Session) -> Tool:
             description="Search the web for the latest information",
             type=ToolType.OPENAI_TOOL,
             configuration={
-                "type": "web_search"
+                "type": "web_search_preview",
+                # Optionally add user_location and search_context_size here if needed
+                # "user_location": {"type": "approximate", "country": "US"},
+                # "search_context_size": "medium"
             },
             created_at=datetime.utcnow()
         )
