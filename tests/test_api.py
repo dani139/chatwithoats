@@ -40,7 +40,7 @@ class APITest(unittest.TestCase):
             "system_prompt": "You are a helpful assistant.",
             "enabled_tools": []
         }
-        response = requests.post(f"{BASE_URL}/chat-settings?add_web_search=false", json=data)
+        response = requests.post(f"{BASE_URL}/chat-settings", json=data)
         self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
         
         chat_settings = response.json()
@@ -54,12 +54,12 @@ class APITest(unittest.TestCase):
         print(f"✓ Created chat settings without tools (ID: {settings_id})")
         return settings_id
     
-    def test_02_create_chat_settings_with_web_search(self):
-        """Test creating chat settings with web search tool"""
-        # Create chat settings with web search
+    def test_02_create_chat_settings_second(self):
+        """Test creating a second chat settings instance"""
+        # Create second chat settings
         data = {
-            "name": "Test Settings - Web Search",
-            "description": "Chat settings with web search",
+            "name": "Test Settings - Second Instance",
+            "description": "Another chat settings instance for testing",
             "system_prompt": "You are a helpful assistant.",
             "enabled_tools": []
         }
@@ -70,20 +70,18 @@ class APITest(unittest.TestCase):
         settings_id = chat_settings["id"]
         self.chat_settings_ids.append(settings_id)
         
-        # Verify web search tool is enabled
-        self.assertEqual(len(chat_settings["enabled_tools"]), 1, 
-                        f"Expected 1 tool but found: {len(chat_settings['enabled_tools'])}")
+        # Since we're not auto-adding web search anymore, verify no tools are enabled
+        self.assertEqual(len(chat_settings["enabled_tools"]), 0, 
+                        f"Expected 0 tools but found: {len(chat_settings['enabled_tools'])}")
         
-        # Get the OpenAI tools format
+        # Get the OpenAI tools format - should be empty
         response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/openai-tools")
         self.assertEqual(response.status_code, 200, f"Failed to get OpenAI tools: {response.text}")
         
         tools = response.json()
-        self.assertEqual(len(tools), 1, f"Expected 1 tool but found: {len(tools)}")
-        self.assertEqual(tools[0]["type"], "web_search_preview",
-                         f"Expected web_search_preview tool but found: {tools[0]}")
+        self.assertEqual(len(tools), 0, f"Expected 0 tools but found: {len(tools)}")
         
-        print(f"✓ Created chat settings with web search (ID: {settings_id})")
+        print(f"✓ Created second chat settings (ID: {settings_id})")
         return settings_id
     
     # def test_03_create_chat_settings_with_web_search_and_speech(self):
@@ -198,14 +196,14 @@ class APITest(unittest.TestCase):
         
         print(f"✓ Simple message test passed: {result['response_text'][:20]}...")
     
-    def test_06_send_web_search_message(self):
-        """Test sending a message that requires web search"""
-        # Create chat settings with web search
-        settings_id = self.test_02_create_chat_settings_with_web_search()
+    def test_06_send_knowledge_based_message(self):
+        """Test sending a message that requires general knowledge"""
+        # Create chat settings
+        settings_id = self.test_02_create_chat_settings_second()
         
         # Create conversation
         data = {
-            "name": "Test Web Search",
+            "name": "Test Knowledge Query",
             "is_group": False,
             "chat_settings_id": settings_id,
             "participants": ["test_user"],
@@ -217,9 +215,9 @@ class APITest(unittest.TestCase):
         conversation_id = response.json()["chatid"]
         self.conversation_ids.append(conversation_id)
         
-        # Send message requiring web search
+        # Send message requiring general knowledge
         data = {
-            "content": "What is the current stock price of Apple (AAPL)?",
+            "content": "Who wrote Pride and Prejudice?",
             "user_id": "test123",
             "username": "tester"
         }
@@ -230,13 +228,11 @@ class APITest(unittest.TestCase):
         self.assertIn("response_text", result, "Response doesn't contain response_text")
         self.assertNotIn("error", result["response_text"].lower(), "Response contains error")
         
-        # Response should contain stock information
-        has_stock_info = any(term in result["response_text"].lower() for term in 
-                            ["aapl", "apple", "stock", "price", "market"])
-        self.assertTrue(has_stock_info, 
-                      f"Expected stock info but got: {result['response_text'][:100]}...")
+        # Response should mention Jane Austen
+        self.assertIn("jane austen", result["response_text"].lower(), 
+                     f"Expected answer about Jane Austen but got: {result['response_text'][:100]}...")
         
-        print(f"✓ Web search test passed: {result['response_text'][:20]}...")
+        print(f"✓ Knowledge-based query test passed: {result['response_text'][:20]}...")
     
     # def test_07_test_speech_api(self):
     #     """Test the speech API tool directly"""

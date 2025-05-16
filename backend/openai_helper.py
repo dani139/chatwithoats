@@ -220,7 +220,7 @@ class OpenAIHelper:
     
     def format_tools_for_openai(self, tools: List[Tool]) -> List[Dict[str, Any]]:
         """
-        Format tools for the OpenAI API based on their type.
+        Format tools for the OpenAI API based on their tool_type.
         
         Args:
             tools: List of Tool objects
@@ -232,34 +232,118 @@ class OpenAIHelper:
         
         for tool in tools:
             try:
-                config = tool.configuration
-                if tool.type == ToolType.OPENAI_TOOL:
-                    config_type = config.get("type")
-                    if config_type in ["web_search", "web_search_preview"]:
+                # Use tool_type if available, otherwise fallback to old structure for backward compatibility
+                if tool.tool_type:
+                    if tool.tool_type == ToolType.WEB_SEARCH:
+                        # Built-in web search tool
                         ws_tool = {"type": "web_search_preview"}
-                        if "user_location" in config:
-                            ws_tool["user_location"] = config["user_location"]
-                        if "search_context_size" in config:
-                            ws_tool["search_context_size"] = config["search_context_size"]
+                        if tool.function_schema:
+                            # Add any optional configuration
+                            if "user_location" in tool.function_schema:
+                                ws_tool["user_location"] = tool.function_schema["user_location"]
+                            if "search_context_size" in tool.function_schema:
+                                ws_tool["search_context_size"] = tool.function_schema["search_context_size"]
                         openai_tools.append(ws_tool)
-                    elif "type" in config:
-                        openai_tools.append(config)
-                elif tool.type == ToolType.FUNCTION:
-                    # Format function for OpenAI
-                    function_def = {
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": config.get("parameters", {})
+                    
+                    elif tool.tool_type == ToolType.FILE_SEARCH:
+                        # Built-in file search tool
+                        openai_tools.append({"type": "file_search"})
+                    
+                    elif tool.tool_type == ToolType.FUNCTION:
+                        if tool.api_request_id:
+                            # API-based function tool
+                            api_request = tool.api_request
+                            if not api_request:
+                                logger.warning(f"API request not found for tool: {tool.id}")
+                                continue
+                            
+                            # Build function schema from API request
+                            function_def = {
+                                "type": "function",
+                                "function": {
+                                    "name": tool.name,
+                                    "description": tool.description or api_request.description or f"Call {api_request.path}",
+                                    "parameters": self._build_parameters_from_api_request(api_request)
+                                }
+                            }
+                            openai_tools.append(function_def)
+                        elif tool.function_schema:
+                            # Custom function tool with direct schema
+                            function_def = {
+                                "type": "function",
+                                "function": tool.function_schema
+                            }
+                            openai_tools.append(function_def)
+                        else:
+                            # Fallback for function tools without schema
+                            function_def = {
+                                "type": "function",
+                                "function": {
+                                    "name": tool.name,
+                                    "description": tool.description or "Call a function",
+                                    "parameters": {"type": "object", "properties": {}, "required": []}
+                                }
+                            }
+                            openai_tools.append(function_def)
+                
+                # Backward compatibility for old tool structure
+                else:
+                    config = tool.configuration
+                    if tool.type == ToolType.OPENAI_TOOL:
+                        config_type = config.get("type")
+                        if config_type in ["web_search", "web_search_preview"]:
+                            ws_tool = {"type": "web_search_preview"}
+                            if "user_location" in config:
+                                ws_tool["user_location"] = config["user_location"]
+                            if "search_context_size" in config:
+                                ws_tool["search_context_size"] = config["search_context_size"]
+                            openai_tools.append(ws_tool)
+                        elif config_type == "function":
+                            openai_tools.append(config)
+                    elif tool.type == "function":
+                        function_def = {
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": config.get("parameters", {})
+                            }
                         }
-                    }
-                    openai_tools.append(function_def)
+                        openai_tools.append(function_def)
             except Exception as e:
                 logger.error(f"Error formatting tool {tool.name} ({tool.id}): {e}")
                 
         logger.info(f"Returning {len(openai_tools)} formatted tools")
         return openai_tools
+    
+    def _build_parameters_from_api_request(self, api_request) -> Dict[str, Any]:
+        """
+        Build function parameters schema from API request details.
+        
+        Args:
+            api_request: The API request object
+            
+        Returns:
+            JSON Schema object for parameters
+        """
+        # Start with a basic object schema
+        parameters = {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+        
+        # Use request_body_schema if available
+        if api_request.request_body_schema:
+            # Extract properties from request body schema
+            if isinstance(api_request.request_body_schema, dict):
+                schema = api_request.request_body_schema
+                if "properties" in schema:
+                    parameters["properties"] = schema["properties"]
+                if "required" in schema:
+                    parameters["required"] = schema["required"]
+        
+        return parameters
     
     def _add_tool_message_to_history(
         self,

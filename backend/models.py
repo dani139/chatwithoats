@@ -23,9 +23,9 @@ class SourceType(str, Enum):
     PORTAL = "PORTAL"
 
 class ToolType(str, Enum):
-    OPENAI_TOOL = "openai_tools"
-    API_TOOL = "api_tools"
-    MESSAGE_TOOL = "message_tools"
+    FUNCTION = "function"
+    WEB_SEARCH = "web_search_preview"
+    FILE_SEARCH = "file_search"
 
 # Association table for ChatSettings to Tools many-to-many relationship
 chat_settings_tools = Table(
@@ -54,13 +54,17 @@ class Tool(Base):
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    type = Column(String, nullable=False)
-    configuration = Column(JSON, nullable=False)
+    type = Column(String, nullable=False)  # Legacy column, kept for backwards compatibility
+    tool_type = Column(String, nullable=True)  # New column: 'function', 'web_search_preview', etc.
+    api_request_id = Column(String, ForeignKey("api_requests.id"), nullable=True)
+    configuration = Column(JSON, nullable=False)  # Legacy column, kept for backwards compatibility
+    function_schema = Column(JSON, nullable=True)  # New column: Directly stores OpenAI function schema
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=True)
     
     # Relationships
     chat_settings = relationship("ChatSettings", secondary=chat_settings_tools, back_populates="tools")
+    api_request = relationship("ApiRequest", back_populates="tools")
 
 class ChatSettings(Base):
     __tablename__ = "chat_settings"
@@ -70,11 +74,42 @@ class ChatSettings(Base):
     description = Column(String, nullable=True)
     system_prompt = Column(String, nullable=False)
     model = Column(String, nullable=False, default="gpt-4o-mini")
-    enabled_tools = Column(JSON, nullable=False, default=[])
+    # enabled_tools removed - we now only use the relationship
     
     # Relationships
     conversations = relationship("Conversation", back_populates="chat_settings")
     tools = relationship("Tool", secondary=chat_settings_tools, back_populates="chat_settings")
+
+class ApiRequest(Base):
+    __tablename__ = "api_requests"
+    
+    id = Column(String, primary_key=True)
+    api_id = Column(String, ForeignKey("apis.id"), nullable=False)
+    path = Column(String, nullable=False)
+    method = Column(String, nullable=False)  # HTTP method (GET, POST, etc.)
+    description = Column(String, nullable=True)
+    request_body_schema = Column(JSON, nullable=True)
+    response_schema = Column(JSON, nullable=True)
+    skip_parameters = Column(JSON, nullable=True)
+    constant_parameters = Column(JSON, nullable=True)
+    
+    # Relationships
+    api = relationship("Api", back_populates="requests")
+    tools = relationship("Tool", back_populates="api_request")
+
+class Api(Base):
+    __tablename__ = "apis"
+    
+    id = Column(String, primary_key=True)
+    server = Column(String, nullable=False)
+    service = Column(String, nullable=False)
+    provider = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    processed = Column(Boolean, nullable=False)
+    
+    # Relationships
+    requests = relationship("ApiRequest", back_populates="api")
 
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -174,7 +209,6 @@ class ChatSettingsBase(BaseModel):
     description: Optional[str] = None
     system_prompt: str
     model: str = "gpt-4o-mini"
-    enabled_tools: List[str] = []
 
 class ChatSettingsCreate(ChatSettingsBase):
     pass
@@ -184,7 +218,6 @@ class ChatSettingsUpdate(BaseModel):
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     model: Optional[str] = None
-    enabled_tools: Optional[List[str]] = None
 
 class ChatSettingsResponse(ChatSettingsBase):
     id: str
@@ -219,8 +252,9 @@ class MessageToolConfig(BaseModel):
 class ToolBase(BaseModel):
     name: str
     description: Optional[str] = None
-    type: ToolType
-    configuration: Union[ApiToolConfig, OpenAIToolConfig, MessageToolConfig]
+    tool_type: ToolType
+    api_request_id: Optional[str] = None
+    function_schema: Optional[Dict[str, Any]] = None
 
 class ToolCreate(ToolBase):
     pass
@@ -228,7 +262,9 @@ class ToolCreate(ToolBase):
 class ToolUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    configuration: Optional[Dict[str, Any]] = None
+    tool_type: Optional[ToolType] = None
+    api_request_id: Optional[str] = None
+    function_schema: Optional[Dict[str, Any]] = None
 
 class ToolResponse(ToolBase):
     id: str
@@ -250,6 +286,42 @@ class PortalUserResponse(BaseModel):
     email: Optional[str] = None
     created_at: datetime.datetime
     updated_at: Optional[datetime.datetime] = None
+    
+    class Config:
+        orm_mode = True
+
+# Add ApiRequest models
+class ApiRequestBase(BaseModel):
+    api_id: str
+    path: str
+    method: str
+    description: Optional[str] = None
+    request_body_schema: Optional[Dict[str, Any]] = None
+    response_schema: Optional[Dict[str, Any]] = None
+
+class ApiRequestCreate(ApiRequestBase):
+    pass
+
+class ApiRequestUpdate(BaseModel):
+    path: Optional[str] = None
+    method: Optional[str] = None
+    description: Optional[str] = None
+    request_body_schema: Optional[Dict[str, Any]] = None
+    response_schema: Optional[Dict[str, Any]] = None
+
+class ApiRequestResponse(ApiRequestBase):
+    id: str
+    
+    class Config:
+        orm_mode = True
+
+# Add models for managing tool associations
+class AddToolToSettings(BaseModel):
+    tool_id: str
+
+class ToolAssignmentResponse(BaseModel):
+    chat_settings_id: str
+    tools: List[ToolResponse]
     
     class Config:
         orm_mode = True 

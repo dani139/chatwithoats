@@ -34,7 +34,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/initial_schema.sql:/docker-entrypoint-initdb.d/initial_schema.sql # Mount the schema file
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql # Mount the schema file
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: iamhipster

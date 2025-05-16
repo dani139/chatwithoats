@@ -9,7 +9,7 @@ import json
 from pydantic import BaseModel
 
 from db import get_db
-from models import Tool, ToolCreate, ToolUpdate, ToolResponse, ChatSettings, ToolType, ApiToolConfig, OpenAIToolConfig, MessageToolConfig, Conversation
+from models import Tool, ToolCreate, ToolUpdate, ToolResponse, ChatSettings, ToolType, ApiToolConfig, OpenAIToolConfig, MessageToolConfig, Conversation, ApiRequest, Api
 from openai_helper import openai_helper
 
 logger = logging.getLogger(__name__)
@@ -21,25 +21,34 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
     # Generate a UUID for the id
     tool_id = str(uuid.uuid4())
     
-    # Validate tool configuration based on tool type
-    if tool.type == ToolType.OPENAI_TOOL:
-        config = tool.configuration
-        # For function type, validate required fields
-        if config.type == "function":
-            if not config.name:
-                raise HTTPException(status_code=400, detail="Function tools must have a name")
-            if not config.description:
-                raise HTTPException(status_code=400, detail="Function tools must have a description")
-            if not config.parameters:
-                raise HTTPException(status_code=400, detail="Function tools must have parameters")
+    # Validate tool configuration
+    if tool.tool_type == ToolType.FUNCTION:
+        # Validate function schema for function tools
+        if tool.api_request_id:
+            # Check if API request exists
+            api_request = db.query(ApiRequest).filter(ApiRequest.id == tool.api_request_id).first()
+            if not api_request:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"API request with ID {tool.api_request_id} not found"
+                )
+        elif not tool.function_schema:
+            # Function tools must have either an API request or a function schema
+            raise HTTPException(
+                status_code=400,
+                detail="Function tools must have either an API request ID or a function schema"
+            )
     
-    # Create new tool DB record
+    # Create new tool DB record using new schema
     db_tool = Tool(
         id=tool_id,
         name=tool.name,
         description=tool.description,
-        type=tool.type,
-        configuration=tool.configuration.dict(),
+        type=str(tool.tool_type),  # Store tool_type in legacy type field for backward compatibility
+        tool_type=tool.tool_type,
+        api_request_id=tool.api_request_id,
+        function_schema=tool.function_schema,
+        configuration={},  # Empty configuration for new tools
         created_at=datetime.utcnow()
     )
     
@@ -50,7 +59,7 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_tool)
     
-    logger.info(f"Created tool with ID: {tool_id}")
+    logger.info(f"Created tool with ID: {tool_id}, type: {tool.tool_type}")
     
     # Convert to response model
     return db_tool
@@ -274,7 +283,7 @@ async def add_tool_to_chat_settings(
         raise HTTPException(status_code=404, detail="Tool not found")
     
     # For API tools, create a copy instead of using the original
-    if tool.type == ToolType.API_TOOL:
+    if tool.type == "API_TOOL":
         # Generate a new UUID for the copy
         new_tool_id = str(uuid.uuid4())
         
@@ -310,12 +319,6 @@ async def add_tool_to_chat_settings(
     # Associate tool with chat settings
     chat_settings.tools.append(tool)
     
-    # Also add to enabled_tools
-    enabled_tools = chat_settings.enabled_tools or []
-    if tool_id not in enabled_tools:
-        enabled_tools.append(tool_id)
-        chat_settings.enabled_tools = enabled_tools
-    
     # Save changes
     db.add(chat_settings)
     db.commit()
@@ -345,18 +348,12 @@ async def remove_tool_from_chat_settings(
     if tool in chat_settings.tools:
         chat_settings.tools.remove(tool)
     
-    # Also remove from enabled_tools
-    enabled_tools = chat_settings.enabled_tools or []
-    if tool_id in enabled_tools:
-        enabled_tools.remove(tool_id)
-        chat_settings.enabled_tools = enabled_tools
-    
     # Save changes
     db.add(chat_settings)
     db.commit()
     
     logger.info(f"Removed tool {tool_id} from chat settings {settings_id}")
-    return 
+    return
 
 @router.put("/chat-settings/{settings_id}/tools/{tool_id}/headers")
 async def update_api_tool_headers(
@@ -445,7 +442,7 @@ async def import_openapi_spec(
     db: Session = Depends(get_db)
 ):
     """
-    Import an OpenAPI specification (JSON or YAML) and create API tools for each endpoint.
+    Import an OpenAPI specification (JSON or YAML) and create API-based function tools.
     
     Args:
         file: The OpenAPI spec file (JSON or YAML)
@@ -478,8 +475,42 @@ async def import_openapi_spec(
         if 'openapi' not in spec:
             raise HTTPException(status_code=400, detail="File is not a valid OpenAPI specification")
         
+        # First, create an API record for this OpenAPI spec
+        api_id = str(uuid.uuid4())
+        
+        # Get API metadata from the spec
+        api_title = spec.get('info', {}).get('title', 'Imported API')
+        api_version = spec.get('info', {}).get('version', '1.0.0')
+        api_description = spec.get('info', {}).get('description', f'Imported from {file.filename}')
+        
+        # Determine server URL from OpenAPI spec if available
+        server_url = ""
+        if 'servers' in spec and len(spec['servers']) > 0:
+            server_obj = spec['servers'][0]
+            if 'url' in server_obj:
+                server_url = server_obj['url']
+        
+        # Create the API record
+        db_api = Api(
+            id=api_id,
+            server=server_url,
+            service=api_title,
+            provider=spec.get('info', {}).get('contact', {}).get('name', 'Unknown'),
+            version=api_version,
+            description=api_description,
+            processed=True
+        )
+        
+        # Add to database
+        db.add(db_api)
+        db.commit()
+        db.refresh(db_api)
+        
+        logger.info(f"Created API record with ID: {api_id}")
+        
         # List to store created tools
         created_tools = []
+        api_requests = []
         
         # Process paths and operations
         for path, path_item in spec.get('paths', {}).items():
@@ -518,60 +549,29 @@ async def import_openapi_spec(
                         request_schema = resolve_schema_reference_from_spec(schema, spec)
                         break
                 
-                # Create the API tool configuration
-                config = {
-                    "endpoint": path,
-                    "method": method.upper(),
-                    "params": {},
-                    "headers": {},
-                }
+                # Create a UUID for the API request
+                api_request_id = str(uuid.uuid4())
                 
-                # Get server URL from OpenAPI spec if available
-                server_url = ""
-                if 'servers' in spec and len(spec['servers']) > 0:
-                    server_obj = spec['servers'][0]
-                    if 'url' in server_obj:
-                        server_url = server_obj['url']
-                        # If server URL doesn't end with a slash but path starts with one, 
-                        # it will be preserved, otherwise add a prefix separator
-                        if not server_url.endswith('/') and not path.startswith('/'):
-                            server_url += '/'
+                # Create API request record
+                db_api_request = ApiRequest(
+                    id=api_request_id,
+                    api_id=api_id,
+                    path=path,
+                    method=method.upper(),
+                    description=description,
+                    request_body_schema=request_schema,
+                    skip_parameters=None,
+                    constant_parameters=None
+                )
                 
-                # If we have a server URL, use it with the path
-                if server_url:
-                    config["server_url"] = server_url
-                
-                # If there's a request body schema, store the fully resolved schema
-                if request_schema:
-                    config["body_schema"] = request_schema
-                
-                # Add parameters to config
-                for param in parameters:
-                    param_name = param.get('name')
-                    param_location = param.get('in')  # query, path, header, cookie
-                    param_required = param.get('required', False)
-                    param_schema = param.get('schema', {})
-                    
-                    # Resolve parameter schema if it's a reference
-                    resolved_param_schema = resolve_schema_reference_from_spec(param_schema, spec)
-                    
-                    if param_location == 'query':
-                        config['params'][param_name] = {
-                            'required': param_required,
-                            'schema': resolved_param_schema,
-                            'description': param.get('description', '')
-                        }
-                    elif param_location == 'header':
-                        config['headers'][param_name] = {
-                            'required': param_required,
-                            'schema': resolved_param_schema,
-                            'description': param.get('description', '')
-                        }
+                # Add to database
+                db.add(db_api_request)
+                api_requests.append(db_api_request)
                 
                 # Create function-friendly name
                 function_name = operation_id.replace('-', '_').replace(' ', '_').lower()
                 
-                # Generate a UUID for the id
+                # Generate a UUID for the tool
                 tool_id = str(uuid.uuid4())
                 
                 # Prepare a description that properly describes what the API does
@@ -580,23 +580,51 @@ async def import_openapi_spec(
                     full_url = f"{server_url}{path}" if not path.startswith('/') else f"{server_url}{path[1:]}"
                     tool_description += f" (Endpoint: {full_url})"
                 
-                # Create the tool object
-                tool_config = ApiToolConfig(
-                    endpoint=config['endpoint'],
-                    method=config['method'],
-                    params=config['params'],
-                    headers=config['headers'],
-                    body_schema=config.get('body_schema'),
-                    server_url=config.get('server_url', "")
-                )
+                # Create the function schema
+                parameters_schema = {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
                 
-                # Create new tool DB record
+                # Add parameters to schema
+                for param in parameters:
+                    param_name = param.get('name')
+                    param_required = param.get('required', False)
+                    param_schema = param.get('schema', {})
+                    
+                    # Resolve parameter schema if it's a reference
+                    resolved_param_schema = resolve_schema_reference_from_spec(param_schema, spec)
+                    
+                    # Add to parameters schema
+                    parameters_schema["properties"][param_name] = resolved_param_schema
+                    if param_required:
+                        parameters_schema["required"].append(param_name)
+                
+                # Add request body to parameters schema if it exists
+                if request_schema and request_schema.get('properties'):
+                    for prop_name, prop_schema in request_schema.get('properties', {}).items():
+                        parameters_schema["properties"][prop_name] = prop_schema
+                    # Add required fields
+                    if request_schema.get('required'):
+                        for req_field in request_schema.get('required'):
+                            if req_field not in parameters_schema["required"]:
+                                parameters_schema["required"].append(req_field)
+                
+                # Create new tool record using new schema
                 db_tool = Tool(
                     id=tool_id,
                     name=function_name,
                     description=tool_description,
-                    type=ToolType.API_TOOL,
-                    configuration=tool_config.dict(),
+                    type="function",  # Legacy compatibility
+                    tool_type=ToolType.FUNCTION,
+                    api_request_id=api_request_id,
+                    function_schema={
+                        "name": function_name,
+                        "description": tool_description,
+                        "parameters": parameters_schema
+                    },
+                    configuration={},  # Empty legacy config
                     created_at=datetime.utcnow()
                 )
                 
@@ -606,50 +634,42 @@ async def import_openapi_spec(
                 # Add to the list of created tools
                 created_tools.append(db_tool)
         
-        # Commit all tools to the database
+        # Commit all to the database
         db.commit()
         
         # Refresh all tools to get their updated database values
         for tool in created_tools:
             db.refresh(tool)
         
-        logger.info(f"Created {len(created_tools)} API tools from OpenAPI spec")
+        logger.info(f"Created {len(created_tools)} function tools from OpenAPI spec")
+        logger.info(f"Created {len(api_requests)} API requests from OpenAPI spec")
         
-        # Convert SQLAlchemy models to Pydantic models for the response
-        response_tools = []
+        # Convert Tool objects to ToolResponse objects
+        tool_responses = []
         for tool in created_tools:
-            # Extract configuration as a dictionary
-            if isinstance(tool.configuration, dict):
-                config = tool.configuration
-            else:
-                config = json.loads(json.dumps(tool.configuration))
-                
-            # Create the appropriate config model based on the tool type
-            if tool.type == ToolType.API_TOOL:
-                config_model = ApiToolConfig(**config)
-            elif tool.type == ToolType.OPENAI_TOOL:
-                config_model = OpenAIToolConfig(**config)
-            else:
-                config_model = MessageToolConfig(**config)
-                
-            # Create the response object
-            response_tool = ToolResponse(
+            tool_response = ToolResponse(
                 id=tool.id,
                 name=tool.name,
                 description=tool.description,
-                type=tool.type,
-                configuration=config_model,
+                tool_type=tool.tool_type,
+                api_request_id=tool.api_request_id,
+                function_schema=tool.function_schema,
                 created_at=tool.created_at,
                 updated_at=tool.updated_at
             )
-            response_tools.append(response_tool)
+            tool_responses.append(tool_response)
         
+        # Return response with properly converted tools
         return OpenAPIImportResponse(
-            tools_created=len(response_tools),
-            tools=response_tools
+            tools_created=len(created_tools),
+            tools=tool_responses
         )
         
+    except HTTPException as e:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
+        # Log the error and return a 500
         logger.error(f"Error importing OpenAPI spec: {e}")
         raise HTTPException(status_code=500, detail=f"Error importing OpenAPI spec: {str(e)}")
 
@@ -758,12 +778,6 @@ async def create_speech_tool(settings_id: str, db: Session = Depends(get_db)):
                 # Assign it to the chat settings
                 chat_settings.tools.append(existing_tool)
                 
-                # Update enabled_tools list
-                enabled_tools = chat_settings.enabled_tools or []
-                if existing_tool.id not in enabled_tools:
-                    enabled_tools.append(existing_tool.id)
-                    chat_settings.enabled_tools = enabled_tools
-                
                 # Save changes
                 db.add(chat_settings)
                 db.commit()
@@ -828,12 +842,6 @@ async def create_speech_tool(settings_id: str, db: Session = Depends(get_db)):
         
         # Assign it to the chat settings
         chat_settings.tools.append(speech_tool)
-        
-        # Update enabled_tools list
-        enabled_tools = chat_settings.enabled_tools or []
-        if tool_id not in enabled_tools:
-            enabled_tools.append(tool_id)
-            chat_settings.enabled_tools = enabled_tools
         
         # Save changes
         db.add(chat_settings)

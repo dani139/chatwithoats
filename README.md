@@ -12,11 +12,41 @@ For instructions on setting up, administering, and pairing the WuzAPI service, r
 
 For information about the backend API, database models, and WhatsApp integration, see the [Backend Documentation](backend/README.md).
 
+## OpenAI Tools Integration
+
+ChatWithOats now features a powerful integration with OpenAI's function calling and tools system. The application supports:
+
+- Web search tools using OpenAI's built-in web_search_preview type
+- Custom function tools with direct schema definitions
+- API-based function tools generated from OpenAPI specifications
+
+Tools can be assigned to specific chat settings to control which capabilities are available in each conversation.
+
+### Tool Types
+
+- **Web Search Tools**: Allow the AI to search the web for up-to-date information
+- **Function Tools**: Enable custom code execution with parameters defined by JSON Schema
+- **API-based Function Tools**: Connect to external APIs by importing their OpenAPI specifications
+
+### Creating Tools
+
+Tools can be created via the API endpoints:
+- `/tools` - Create individual tools
+- `/tools/import-openapi` - Import an entire OpenAPI specification to create multiple API-based tools
+
+### Assigning Tools to Chats
+
+Once created, tools can be assigned to chat settings via:
+- `/chat-settings/{settings_id}/tools/{tool_id}` - Add a tool to chat settings
+
 ## Tests
 
 For information about running tests and test organization, see the [Tests Documentation](tests/README.md).
 
 ## Future
+
+change tests now that tools changed.
+
 
 put back .env, get key from there. remove from repo also backwards. fix the bug, maybe not pased from docker or something.
 make sure web_search works, and also speech. 
