@@ -12,6 +12,10 @@ For instructions on setting up, administering, and pairing the WuzAPI service, r
 
 For information about the backend API, database models, and WhatsApp integration, see the [Backend Documentation](backend/README.md).
 
+## Tests
+
+For information about running tests and test organization, see the [Tests Documentation](tests/README.md).
+
 ## Future
 
 put back .env, get key from there. remove from repo also backwards. fix the bug, maybe not pased from docker or something.

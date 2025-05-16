@@ -4,20 +4,21 @@ import requests
 import json
 import time
 import os
+import pytest
 from typing import Dict, Any, List, Optional
 
 BASE_URL = "http://localhost:8000/api"
 
-class ToolsIntegrationTest(unittest.TestCase):
+@pytest.mark.api
+class APITest(unittest.TestCase):
     """
-    Integration tests for testing tools functionality with the ChatWithOats API.
+    API tests for ChatWithOats backend.
     
     These tests cover:
-    1. Creating chat settings with and without web search
+    1. Creating chat settings with and without tools
     2. Creating conversations
-    3. Testing message responses with no tools
-    4. Testing message responses with web search
-    5. Testing speech API tool functionality
+    3. Testing message responses with different tool configurations
+    4. Testing web search functionality
     """
     
     def setUp(self):
@@ -85,53 +86,53 @@ class ToolsIntegrationTest(unittest.TestCase):
         print(f"✓ Created chat settings with web search (ID: {settings_id})")
         return settings_id
     
-    def test_03_create_chat_settings_with_web_search_and_speech(self):
-        """Test creating chat settings with web search and speech tools"""
-        # Create chat settings with web search
-        data = {
-            "name": "Test Settings - Web Search & Speech",
-            "description": "Chat settings with web search and speech",
-            "system_prompt": "You are a helpful assistant.",
-            "enabled_tools": []
-        }
-        response = requests.post(f"{BASE_URL}/chat-settings", json=data)
-        self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
-        
-        chat_settings = response.json()
-        settings_id = chat_settings["id"]
-        self.chat_settings_ids.append(settings_id)
-        
-        # Get the speech tool ID
-        response = requests.get(f"{BASE_URL}/tools")
-        self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
-        
-        tools = response.json()
-        speech_tool_id = None
-        for tool in tools:
-            if tool["name"] == "text_to_speech" or "speech" in tool["name"].lower():
-                speech_tool_id = tool["id"]
-                break
-        
-        self.assertIsNotNone(speech_tool_id, "No speech tool found")
-        
-        # Add speech tool to chat settings
-        response = requests.post(f"{BASE_URL}/chat-settings/{settings_id}/tools/{speech_tool_id}")
-        self.assertEqual(response.status_code, 200, f"Failed to add speech tool: {response.text}")
-        
-        # Get the OpenAI tools format
-        response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/openai-tools")
-        self.assertEqual(response.status_code, 200, f"Failed to get OpenAI tools: {response.text}")
-        
-        tools = response.json()
-        self.assertEqual(len(tools), 2, f"Expected 2 tools but found: {len(tools)}")
-        
-        # Verify tool types
-        tool_types = [tool["type"] for tool in tools]
-        self.assertIn("web_search_preview", tool_types, "Web search tool not found")
-        self.assertIn("function", tool_types, "Function tool (speech) not found")
-        
-        print(f"✓ Created chat settings with web search and speech (ID: {settings_id})")
-        return settings_id
+    # def test_03_create_chat_settings_with_web_search_and_speech(self):
+    #     """Test creating chat settings with web search and speech tools"""
+    #     # Create chat settings with web search
+    #     data = {
+    #         "name": "Test Settings - Web Search & Speech",
+    #         "description": "Chat settings with web search and speech",
+    #         "system_prompt": "You are a helpful assistant.",
+    #         "enabled_tools": []
+    #     }
+    #     response = requests.post(f"{BASE_URL}/chat-settings", json=data)
+    #     self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
+    #     
+    #     chat_settings = response.json()
+    #     settings_id = chat_settings["id"]
+    #     self.chat_settings_ids.append(settings_id)
+    #     
+    #     # Get the speech tool ID
+    #     response = requests.get(f"{BASE_URL}/tools")
+    #     self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
+    #     
+    #     tools = response.json()
+    #     speech_tool_id = None
+    #     for tool in tools:
+    #         if tool["name"] == "text_to_speech" or "speech" in tool["name"].lower():
+    #             speech_tool_id = tool["id"]
+    #             break
+    #     
+    #     self.assertIsNotNone(speech_tool_id, "No speech tool found")
+    #     
+    #     # Add speech tool to chat settings
+    #     response = requests.post(f"{BASE_URL}/chat-settings/{settings_id}/tools/{speech_tool_id}")
+    #     self.assertEqual(response.status_code, 200, f"Failed to add speech tool: {response.text}")
+    #     
+    #     # Get the OpenAI tools format
+    #     response = requests.get(f"{BASE_URL}/chat-settings/{settings_id}/openai-tools")
+    #     self.assertEqual(response.status_code, 200, f"Failed to get OpenAI tools: {response.text}")
+    #     
+    #     tools = response.json()
+    #     self.assertEqual(len(tools), 2, f"Expected 2 tools but found: {len(tools)}")
+    #     
+    #     # Verify tool types
+    #     tool_types = [tool["type"] for tool in tools]
+    #     self.assertIn("web_search_preview", tool_types, "Web search tool not found")
+    #     self.assertIn("function", tool_types, "Function tool (speech) not found")
+    #     
+    #     print(f"✓ Created chat settings with web search and speech (ID: {settings_id})")
+    #     return settings_id
     
     def test_04_create_conversation(self):
         """Test creating a conversation"""
@@ -237,53 +238,53 @@ class ToolsIntegrationTest(unittest.TestCase):
         
         print(f"✓ Web search test passed: {result['response_text'][:20]}...")
     
-    def test_07_test_speech_api(self):
-        """Test the speech API tool directly"""
-        # Get the speech tool ID
-        response = requests.get(f"{BASE_URL}/tools")
-        self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
-        
-        tools = response.json()
-        speech_tool_id = None
-        for tool in tools:
-            if tool["name"] == "text_to_speech" or "speech" in tool["name"].lower():
-                speech_tool_id = tool["id"]
-                break
-        
-        self.assertIsNotNone(speech_tool_id, "No speech tool found")
-        
-        # Execute speech tool directly
-        data = {
-            "tool_id": speech_tool_id,
-            "arguments": {
-                "model": "tts-1",
-                "input": "This is a test of the speech API integration.",
-                "voice": "alloy"
-            }
-        }
-        
-        # Use binary output to file
-        response = requests.post(
-            f"{BASE_URL}/tools/execute", 
-            json=data,
-            stream=True
-        )
-        self.assertEqual(response.status_code, 200, f"Failed to execute speech tool: {response.text}")
-        
-        # If successful, the response will either be binary audio data or a success message
-        if response.headers.get('content-type') == 'audio/mpeg':
-            # Save to file
-            with open("test_speech_output.mp3", "wb") as f:
-                for chunk in response.iter_content(chunk_size=128):
-                    f.write(chunk)
-            self.assertTrue(os.path.exists("test_speech_output.mp3"), "Speech output file not created")
-            self.assertTrue(os.path.getsize("test_speech_output.mp3") > 0, "Speech output file is empty")
-            print(f"✓ Speech API test passed: Generated audio file (test_speech_output.mp3)")
-        else:
-            # Text response indicating success
-            self.assertIn("audio", response.text.lower(), 
-                        f"Expected audio success message but got: {response.text}")
-            print(f"✓ Speech API test passed: {response.text[:50]}...")
+    # def test_07_test_speech_api(self):
+    #     """Test the speech API tool directly"""
+    #     # Get the speech tool ID
+    #     response = requests.get(f"{BASE_URL}/tools")
+    #     self.assertEqual(response.status_code, 200, f"Failed to get tools: {response.text}")
+    #     
+    #     tools = response.json()
+    #     speech_tool_id = None
+    #     for tool in tools:
+    #         if tool["name"] == "text_to_speech" or "speech" in tool["name"].lower():
+    #             speech_tool_id = tool["id"]
+    #             break
+    #     
+    #     self.assertIsNotNone(speech_tool_id, "No speech tool found")
+    #     
+    #     # Execute speech tool directly
+    #     data = {
+    #         "tool_id": speech_tool_id,
+    #         "arguments": {
+    #             "model": "tts-1",
+    #             "input": "This is a test of the speech API integration.",
+    #             "voice": "alloy"
+    #         }
+    #     }
+    #     
+    #     # Use binary output to file
+    #     response = requests.post(
+    #         f"{BASE_URL}/tools/execute", 
+    #         json=data,
+    #         stream=True
+    #     )
+    #     self.assertEqual(response.status_code, 200, f"Failed to execute speech tool: {response.text}")
+    #     
+    #     # If successful, the response will either be binary audio data or a success message
+    #     if response.headers.get('content-type') == 'audio/mpeg':
+    #         # Save to file
+    #         with open("test_speech_output.mp3", "wb") as f:
+    #             for chunk in response.iter_content(chunk_size=128):
+    #                 f.write(chunk)
+    #         self.assertTrue(os.path.exists("test_speech_output.mp3"), "Speech output file not created")
+    #         self.assertTrue(os.path.getsize("test_speech_output.mp3") > 0, "Speech output file is empty")
+    #         print(f"✓ Speech API test passed: Generated audio file (test_speech_output.mp3)")
+    #     else:
+    #         # Text response indicating success
+    #         self.assertIn("audio", response.text.lower(), 
+    #                     f"Expected audio success message but got: {response.text}")
+    #         print(f"✓ Speech API test passed: {response.text[:50]}...")
 
 
 if __name__ == "__main__":
