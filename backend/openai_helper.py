@@ -212,11 +212,14 @@ class OpenAIHelper:
                 for msg in tool_messages:
                     formatted_messages = self._add_tool_message_to_history(formatted_messages, msg)
                 
+                # Log the messages being sent for the second call
+                logger.info(f"[OpenAI Helper] Messages for second call after tool execution: {json.dumps(formatted_messages, indent=2)}")
+                
                 # Make another request to get final response
                 response = self.client.responses.create(
                     model=chat_settings.model,
-                    input=formatted_messages,
-                    tools=tools if tools else None
+                    input=formatted_messages, 
+                    tools=tools if tools else None 
                 )
             
             # Extract and return the response text
@@ -282,30 +285,21 @@ class OpenAIHelper:
                     "content": msg.content or ""  # Make sure content is never null
                 })
             elif msg.type == MessageType.TOOL_CALL:
-                # For tool calls, include content as empty string instead of null
-                # Format based on OpenAI's expected structure
-                tc_msg = {
-                    "role": "assistant",
-                    "content": ""  # Empty string instead of null
+                # This represents the models decision to call a function from history.
+                tool_call_object = {
+                    "type": "function_call",
+                    "id": msg.openai_tool_call_id,    # Use the stored fc_... ID from OpenAI's original tool_call
+                    "call_id": msg.tool_call_id,     # Use the stored call_... ID for linking
+                    "name": msg.openai_function_name,  # MUST be the name OpenAI knows
+                    "arguments": msg.function_arguments
                 }
-                
-                # Add tool_calls in the correct format
-                tc_msg["tool_calls"] = [{
-                    "id": msg.tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": msg.function_name,
-                        "arguments": msg.function_arguments
-                    }
-                }]
-                
-                formatted_messages.append(tc_msg)
+                formatted_messages.append(tool_call_object)
             elif msg.type == MessageType.TOOL_RESULT:
-                # This was a tool result
+                # This was a tool result from history
                 formatted_messages.append({
-                    "role": "tool",
-                    "content": msg.function_result,
-                    "tool_call_id": msg.tool_call_id
+                    "type": "function_call_output",
+                    "call_id": msg.tool_call_id,
+                    "output": msg.function_result
                 })
         
         # Add the current user message
@@ -576,23 +570,21 @@ class OpenAIHelper:
             Updated list of formatted messages
         """
         if message.type == MessageType.TOOL_CALL:
-            formatted_messages.append({
-                "role": "assistant",
-                "content": "",  # Provide empty string instead of null
-                "tool_calls": [{
-                    "id": message.tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": message.function_name,
-                        "arguments": message.function_arguments
-                    }
-                }]
-            })
+            tool_call_object = {
+                "type": "function_call",
+                "id": message.openai_tool_call_id,    # Use the stored fc_... ID
+                "call_id": message.tool_call_id,     # Use the stored call_... ID
+                "name": message.openai_function_name, # MUST be the name OpenAI knows
+                "arguments": message.function_arguments
+            }
+            formatted_messages.append(tool_call_object)
+
         elif message.type == MessageType.TOOL_RESULT:
+            # This is the result we are sending back
             formatted_messages.append({
-                "role": "tool",
-                "content": message.function_result,
-                "tool_call_id": message.tool_call_id
+                "type": "function_call_output", 
+                "call_id": message.tool_call_id, # Correctly uses call_... ID for linking output
+                "output": message.function_result 
             })
         
         return formatted_messages
@@ -907,8 +899,10 @@ class OpenAIHelper:
     def _create_tool_call_message(
         self,
         chat_id: str,
-        tool_call_id: str,
-        function_name: str,
+        openai_tool_call_id: str,
+        tool_linking_id: str,
+        tool_definition_name: str,
+        openai_function_name: str,
         function_args: Dict[str, Any]
     ) -> Message:
         """
@@ -916,8 +910,10 @@ class OpenAIHelper:
         
         Args:
             chat_id: The chat ID
-            tool_call_id: The tool call ID
-            function_name: The function name
+            openai_tool_call_id: The ID of the tool call object from OpenAI (fc_...)
+            tool_linking_id: The linking ID for the tool call (call_...)
+            tool_definition_name: The canonical name of the tool (e.g., 'text_to_speech')
+            openai_function_name: The name used/understood by OpenAI (e.g., 'unknown_audio_post_...')
             function_args: The function arguments
             
         Returns:
@@ -931,16 +927,19 @@ class OpenAIHelper:
             type=MessageType.TOOL_CALL,
             content=None,
             role="assistant",
-            tool_call_id=tool_call_id,
-            function_name=function_name,
+            openai_tool_call_id=openai_tool_call_id,
+            tool_call_id=tool_linking_id,
+            tool_definition_name=tool_definition_name,
+            openai_function_name=openai_function_name,
             function_arguments=json.dumps(function_args)
         )
     
     def _create_tool_result_message(
         self,
         chat_id: str,
-        tool_call_id: str,
-        function_name: str,
+        tool_linking_id: str,
+        tool_definition_name: str,
+        openai_function_name: str,
         function_result: str
     ) -> Message:
         """
@@ -948,8 +947,9 @@ class OpenAIHelper:
         
         Args:
             chat_id: The chat ID
-            tool_call_id: The tool call ID
-            function_name: The function name
+            tool_linking_id: The linking ID for the tool call (call_...)
+            tool_definition_name: The canonical name of the tool
+            openai_function_name: The name used/understood by OpenAI
             function_result: The function result
             
         Returns:
@@ -963,8 +963,9 @@ class OpenAIHelper:
             type=MessageType.TOOL_RESULT,
             content=None,
             role="tool",
-            tool_call_id=tool_call_id,
-            function_name=function_name,
+            tool_call_id=tool_linking_id,
+            tool_definition_name=tool_definition_name,
+            openai_function_name=openai_function_name,
             function_result=function_result
         )
     
@@ -1033,7 +1034,7 @@ class OpenAIHelper:
         Process tool calls from an array of tool calls (either dict or object style).
         
         Args:
-            tool_calls: Array of tool calls (from response.output)
+            tool_calls: Array of tool calls (from response.output), named tool_calls_from_openai here
             conversation: The conversation object
             db: Database session
             
@@ -1041,103 +1042,130 @@ class OpenAIHelper:
             A list of tool call and result messages
         """
         messages = []
+        tool_calls_from_openai = tool_calls # Rename for clarity
         
-        # Check if there are any tool calls
-        if not tool_calls:
+        if not tool_calls_from_openai:
             return messages
         
-        # Process each tool call
-        for tool_call in tool_calls:
-            tool_call_id = None
-            function_name = None
+        for tool_call_from_openai in tool_calls_from_openai:
+            openai_fc_id = None
+            openai_call_id = None
+            current_openai_function_name = None # Renamed from function_name for clarity
             function_args = None
             
             # Handle dict-style tool calls (new API format)
-            if isinstance(tool_call, dict):
-                if tool_call.get('type') == 'function_call':
-                    tool_call_id = tool_call.get('id') or tool_call.get('call_id')
-                    function_name = tool_call.get('name')
-                    # Arguments might be a JSON string or dict
-                    args = tool_call.get('arguments')
+            if isinstance(tool_call_from_openai, dict):
+                if tool_call_from_openai.get('type') == 'function_call':
+                    openai_fc_id = tool_call_from_openai.get('id')
+                    openai_call_id = tool_call_from_openai.get('call_id')
+                    
+                    if not openai_call_id:
+                        logger.warning(f"Missing 'call_id' in dict tool_call: {tool_call_from_openai}, skipping.")
+                        continue 
+                    if not openai_fc_id:
+                        logger.warning(f"Missing 'id' (fc_ id) in dict tool_call: {tool_call_from_openai}, skipping.")
+                        continue
+
+                    current_openai_function_name = tool_call_from_openai.get('name')
+                    args = tool_call_from_openai.get('arguments')
                     if isinstance(args, str):
                         try:
                             function_args = json.loads(args)
-                        except:
-                            function_args = {"text": args}
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse JSON arguments for dict tool_call {openai_call_id}. Args: {args}")
+                            function_args = {"error": "Failed to parse arguments", "arguments_string": args}
                     else:
                         function_args = args
             
-            # Handle object-style tool calls (legacy format)
+            # Handle object-style tool calls (e.g. ResponseFunctionToolCall)
             else:
-                # First check for type 'function'
-                if getattr(tool_call, 'type', None) == 'function':
-                    tool_call_id = getattr(tool_call, 'id', None)
-                    function_obj = getattr(tool_call, 'function', None)
-                    if function_obj:
-                        function_name = getattr(function_obj, 'name', None)
-                        args = getattr(function_obj, 'arguments', None)
-                        if isinstance(args, str):
-                            try:
-                                function_args = json.loads(args)
-                            except:
-                                function_args = {"text": args}
+                tool_call_type = getattr(tool_call_from_openai, 'type', None)
+                # 'function' is for older SDK versions, 'function_call' for newer.
+                if tool_call_type == 'function' or tool_call_type == 'function_call':
+                    openai_fc_id = getattr(tool_call_from_openai, 'id', None)
+                    openai_call_id = getattr(tool_call_from_openai, 'call_id', None)
+
+                    if not openai_call_id:
+                        logger.warning(f"Missing 'call_id' in object tool_call: {tool_call_from_openai}, skipping.")
+                        continue
+                    if not openai_fc_id:
+                        logger.warning(f"Missing 'id' (fc_ id) in object tool_call: {tool_call_from_openai}, skipping.")
+                        continue
+                    
+                    if hasattr(tool_call_from_openai, 'name') and hasattr(tool_call_from_openai, 'arguments'):
+                         current_openai_function_name = getattr(tool_call_from_openai, 'name', None)
+                         args_val = getattr(tool_call_from_openai, 'arguments', None)
+                    elif hasattr(tool_call_from_openai, 'function'): # Older SDKs
+                        function_obj = getattr(tool_call_from_openai, 'function', None)
+                        if function_obj:
+                            current_openai_function_name = getattr(function_obj, 'name', None)
+                            args_val = getattr(function_obj, 'arguments', None)
                         else:
-                            function_args = args
-                # Check for ResponseFunctionToolCall objects with type='function_call'
-                elif getattr(tool_call, 'type', None) == 'function_call':
-                    tool_call_id = getattr(tool_call, 'id', None) or getattr(tool_call, 'call_id', None)
-                    function_name = getattr(tool_call, 'name', None)
-                    args = getattr(tool_call, 'arguments', None)
-                    if isinstance(args, str):
-                        try:
-                            function_args = json.loads(args)
-                        except:
-                            function_args = {"text": args}
+                            logger.warning(f"Tool call type is '{tool_call_type}' but 'function' attribute is missing or None.")
+                            continue
                     else:
-                        function_args = args
-                # Then check for ResponseFunctionToolCall objects with direct function property
-                elif hasattr(tool_call, 'function') and tool_call.function:
-                    tool_call_id = getattr(tool_call, 'id', None)
-                    function_name = getattr(tool_call.function, 'name', None)
-                    args = getattr(tool_call.function, 'arguments', None)
-                    if isinstance(args, str):
+                        logger.warning(f"Could not find function name/arguments in tool_call object: {tool_call_from_openai}")
+                        continue
+
+                    if isinstance(args_val, str):
                         try:
-                            function_args = json.loads(args)
-                        except:
-                            function_args = {"text": args}
+                            function_args = json.loads(args_val)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse JSON arguments for object tool_call {openai_call_id}. Args: {args_val}")
+                            function_args = {"error": "Failed to parse arguments", "arguments_string": args_val}
                     else:
-                        function_args = args
+                        function_args = args_val
+                else:
+                    logger.warning(f"Skipping object tool_call with unknown type: {tool_call_type}")
+                    continue
             
-            # Skip if we couldn't extract necessary information
-            if not tool_call_id or not function_name or not function_args:
-                logger.warning(f"Skipping invalid tool call: {tool_call}")
+            if not openai_call_id or not openai_fc_id or not current_openai_function_name: 
+                logger.warning(f"Skipping tool call due to missing openai_call_id, openai_fc_id, or name. Original tool_call: {tool_call_from_openai}")
                 continue
             
-            # Log the original function name received from OpenAI
-            logger.info(f"Processing tool call with original name: {function_name}")
-                
-            # Record the tool call - store the original function name as received from OpenAI
+            # Resolve the canonical tool name
+            tool_id = self._get_tool_id_by_name(current_openai_function_name)
+            resolved_tool_object = None
+            canonical_tool_name = current_openai_function_name # Fallback to openai name if not found
+            if tool_id:
+                for t_obj in conversation.chat_settings.tools:
+                    if t_obj.id == tool_id:
+                        resolved_tool_object = t_obj
+                        canonical_tool_name = resolved_tool_object.name
+                        logger.info(f"Resolved tool: ID='{tool_id}', Canonical Name='{canonical_tool_name}', OpenAI Name='{current_openai_function_name}'")
+                        break
+            if not resolved_tool_object:
+                 logger.warning(f"Could not fully resolve tool object for openai_function_name: {current_openai_function_name}. Using OpenAI name as canonical.")
+
+
+            logger.info(f"Processing tool call: openai_fc_id='{openai_fc_id}', openai_call_id='{openai_call_id}', openai_name='{current_openai_function_name}', canonical_name='{canonical_tool_name}'")
+            
             tool_call_msg = self._create_tool_call_message(
-                conversation.chatid, tool_call_id, function_name, function_args
+                conversation.chatid, 
+                openai_fc_id,
+                openai_call_id,
+                canonical_tool_name, # Use canonical name
+                current_openai_function_name, # Pass OpenAI name
+                function_args
             )
             
-            # Add to database
             db.add(tool_call_msg)
-            db.commit()
+            db.commit() # Commit tool call message first
             messages.append(tool_call_msg)
             
-            # Execute the tool with the function name as received from OpenAI
-            # The _execute_tool function will extract the tool ID if present
-            function_result = await self._execute_tool(conversation, function_name, function_args)
+            # _execute_tool uses the current_openai_function_name to find the tool again
+            function_result = await self._execute_tool(conversation, current_openai_function_name, function_args)
             
-            # Record the tool result - still use the original function name for consistency
             tool_result_msg = self._create_tool_result_message(
-                conversation.chatid, tool_call_id, function_name, function_result
+                conversation.chatid, 
+                openai_call_id,
+                canonical_tool_name, # Use canonical name
+                current_openai_function_name, # Pass OpenAI name
+                function_result
             )
             
-            # Add to database
             db.add(tool_result_msg)
-            db.commit()
+            db.commit() # Commit tool result message
             messages.append(tool_result_msg)
         
         logger.info(f"Processed {len(messages) // 2} tool calls")

@@ -72,7 +72,7 @@ CREATE TABLE public.chat_settings (
 -- Tools table
 CREATE TABLE public.tools (
     id character varying NOT NULL PRIMARY KEY,
-    name character varying NOT NULL,
+    name character varying,
     description character varying,
     type character varying NOT NULL,
     tool_type character varying,
@@ -128,8 +128,10 @@ CREATE TABLE public.messages (
     quoted_message_id character varying REFERENCES public.messages(id),
     quoted_message_content character varying,
     role character varying,
+    openai_tool_call_id character varying,
     tool_call_id character varying,
-    function_name character varying,
+    tool_definition_name character varying,
+    openai_function_name character varying,
     function_arguments character varying,
     function_result character varying,
     created_at timestamp with time zone DEFAULT now()

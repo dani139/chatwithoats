@@ -57,7 +57,7 @@ class Tool(Base):
     __tablename__ = "tools"
     
     id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
+    name = Column(String, nullable=True)
     description = Column(String, nullable=True)
     type = Column(String, nullable=False)  # Legacy column, kept for backwards compatibility
     tool_type = Column(String, nullable=True)  # New column: 'function', 'web_search_preview', etc.
@@ -164,8 +164,10 @@ class Message(Base):
     quoted_message_id = Column(String, ForeignKey("messages.id"), nullable=True)
     quoted_message_content = Column(String, nullable=True)
     role = Column(String, nullable=True)
-    tool_call_id = Column(String, nullable=True)
-    function_name = Column(String, nullable=True)
+    openai_tool_call_id = Column(String, nullable=True) # ID of the tool call object from OpenAI (fc_...)
+    tool_call_id = Column(String, nullable=True) # Linking ID for tool call and result (call_...)
+    tool_definition_name = Column(String, nullable=True) # Canonical name of the tool from our DB
+    openai_function_name = Column(String, nullable=True) # Name used by/returned from OpenAI
     function_arguments = Column(String, nullable=True)
     function_result = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
@@ -255,7 +257,7 @@ class MessageToolConfig(BaseModel):
 
 # Tool models
 class ToolBase(BaseModel):
-    name: str
+    name: Optional[str] = None
     description: Optional[str] = None
     tool_type: ToolType
     api_request_id: Optional[str] = None

@@ -21,6 +21,10 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
     # Generate a UUID for the id
     tool_id = str(uuid.uuid4())
     
+    name = tool.name
+    description = tool.description
+    function_schema = None
+    
     # Validate tool configuration
     if tool.tool_type == ToolType.FUNCTION:
         # Validate function schema for function tools
@@ -38,7 +42,6 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
             api = db.query(Api).filter(Api.id == api_request.api_id).first()
             
             # Generate or enhance the name if needed
-            name = tool.name
             if not name or name.strip() == "":
                 # Create a function-friendly name from the API request
                 method = api_request.method.lower()
@@ -46,7 +49,6 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
                 name = f"{method}_{path_part}"
             
             # Generate or enhance the description if needed
-            description = tool.description
             if not description or description.strip() == "":
                 api_name = api.service if api else "API"
                 server = api.server if api else ""
@@ -98,20 +100,25 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
         else:
             # Custom function schema was provided, just ensure it has a name field
             function_schema = tool.function_schema.copy() if isinstance(tool.function_schema, dict) else {}
-            name = tool.name
-            description = tool.description
             
+            # Generate a name if not provided
+            if not name and "name" in function_schema:
+                name = function_schema["name"]
+            elif not name:
+                name = f"custom_function_{tool_id[:8]}"
+                
             # Ensure function schema has a name field
             if "name" not in function_schema:
-                if not name:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Function tools must have a name, either in the function schema or at the tool level"
-                    )
                 function_schema["name"] = name
             
+            # Generate a description if not provided
+            if not description and "description" in function_schema:
+                description = function_schema["description"]
+            elif not description:
+                description = "Custom function tool"
+                
             # Ensure function schema has a description
-            if "description" not in function_schema and description:
+            if "description" not in function_schema:
                 function_schema["description"] = description
                 
             # Ensure function schema has parameters
@@ -124,8 +131,12 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
     else:
         # For non-function tools, just use the provided schema
         function_schema = tool.function_schema
-        name = tool.name
-        description = tool.description
+        
+        # Generate default name and description if not provided
+        if not name:
+            name = f"{tool.tool_type}_tool_{tool_id[:8]}"
+        if not description:
+            description = f"Tool of type {tool.tool_type}"
     
     # Create new tool DB record using new schema
     db_tool = Tool(

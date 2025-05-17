@@ -271,36 +271,10 @@ class SpeechToolTest(ChatWithOatsTest):
             
             print(f"✓ Found speech-related API request: {speech_api_request.get('path')}")
             
-            # Explicitly create a tool from the API request with proper function schema
+            # Create a speech tool from the API request
             tool_data = {
-                "name": "text_to_speech",
-                "description": "Generate speech from text using OpenAI API",
                 "tool_type": "function",
-                "api_request_id": speech_api_request["id"],
-                "function_schema": {
-                    "name": "text_to_speech",
-                    "description": "Generate speech audio from text using the OpenAI API",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "model": {
-                                "type": "string",
-                                "description": "The TTS model to use",
-                                "enum": ["tts-1", "tts-1-hd"]
-                            },
-                            "input": {
-                                "type": "string",
-                                "description": "The text to convert to speech"
-                            },
-                            "voice": {
-                                "type": "string", 
-                                "description": "The voice to use",
-                                "enum": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-                            }
-                        },
-                        "required": ["input", "model", "voice"]
-                    }
-                }
+                "api_request_id": speech_api_request["id"]
             }
             
             response = requests.post(f"{BASE_URL}/tools", json=tool_data)
@@ -381,14 +355,22 @@ class SpeechToolTest(ChatWithOatsTest):
                 
                 messages = response.json()
                 
+                # Debug print messages
+                print("\n==== MESSAGES FROM API ====")
+                for i, msg in enumerate(messages):
+                    print(f"Message {i}: type={msg.get('type')}, tool_definition_name={msg.get('tool_definition_name')}")
+                print("=============================\n")
+                
                 # Find tool call messages - there should be at least one tool call and one tool result
                 tool_call_message = None
                 tool_result_message = None
                 
                 for msg in messages:
-                    if msg.get("type") == "TOOL_CALL" and msg.get("function_name") == "text_to_speech":
+                    # Check if tool_definition_name exists and starts with "text_to_speech"
+                    tool_def_name = msg.get("tool_definition_name")
+                    if msg.get("type") == "TOOL_CALL" and tool_def_name and tool_def_name.startswith("post_audio_speech"):
                         tool_call_message = msg
-                    elif msg.get("type") == "TOOL_RESULT" and msg.get("function_name") == "text_to_speech":
+                    elif msg.get("type") == "TOOL_RESULT" and tool_def_name and tool_def_name.startswith("post_audio_speech"):
                         tool_result_message = msg
                 
                 # Verify tool call happened

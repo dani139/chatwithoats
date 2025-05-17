@@ -351,6 +351,10 @@ class MessageResponse(BaseModel):
     role: Optional[str] = None
     created_at: datetime
     is_from_user: bool
+    tool_definition_name: Optional[str] = None
+    openai_function_name: Optional[str] = None
+    function_arguments: Optional[str] = None
+    function_result: Optional[str] = None
 
 @router.get("/conversations/{conversation_id}/messages", response_model=List[MessageResponse])
 async def get_conversation_messages(
@@ -394,7 +398,11 @@ async def get_conversation_messages(
                 type=msg.type,
                 role=msg.role,
                 created_at=msg.created_at,
-                is_from_user=bool(msg.sender)  # True if sender is not None
+                is_from_user=bool(msg.sender),  # True if sender is not None
+                tool_definition_name=msg.tool_definition_name,
+                openai_function_name=msg.openai_function_name,
+                function_arguments=msg.function_arguments,
+                function_result=msg.function_result
             )
         )
     
