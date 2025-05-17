@@ -1,3 +1,6 @@
+# This file uses the .env file at the project root for environment variables
+# The backend service explicitly loads the .env file to ensure API keys are consistent
+
 services:
   frontend:
     build:
@@ -18,10 +21,9 @@ services:
     volumes:
       - ./backend:/app
       - ./.env:/app/.env
+    env_file:
+      - ./.env
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      DATABASE_URL: ${DATABASE_URL}
-      WUZAPI_TOKEN: ${WUZAPI_TOKEN:-iamhipster}
       DEBUG: "true"
     depends_on:
       postgres: # If your main backend app (not just webhook handler) needs the main DB
@@ -70,10 +72,13 @@ services:
     ports:
       - "8081:8080" # Host port 8081 maps to container port 8080
     volumes:
+      - ./wuzapi:/app/wuzapi
       - wuzapi_ssl:/app/ssl
       - wuzapi_dbdata:/app/dbdata
+      - ./.env:/app/.env
+    env_file:
+      - ./.env
     environment:
-      WUZAPI_ADMIN_TOKEN: UsQSyX7KMf5QNSe1VMgZHqc6RZeXwqn1Tt0UuquKA
       WUZAPI_WEBHOOK_TIMEOUT: 30
       WUZAPI_MAX_RETRIES: 3
       WUZAPI_RETRY_DELAY: 5
@@ -83,7 +88,7 @@ services:
       DB_PASSWORD: iamhipster
       DB_NAME: wuzapi_db # Use the new database name
       TZ: UTC
-    command: ["/app/server", "-address", "0.0.0.0", "-logtype", "json", "-admintoken", "${WUZAPI_ADMIN_TOKEN}"]
+    command: ["/bin/sh", "-c", "/app/server -address 0.0.0.0 -logtype json -admintoken $WUZAPI_ADMIN_TOKEN"]
     restart: unless-stopped
     depends_on:
       postgres_wuzapi: # Depend on the new wuzapi postgres service

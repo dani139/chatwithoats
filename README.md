@@ -49,11 +49,9 @@ have it clear logs before running docker every time.
 
 ## Future
 
-change tests now that tools changed.
 
-
-put back .env, get key from there. remove from repo also backwards. fix the bug, maybe not pased from docker or something.
-make sure web_search works, and also speech. 
+add to tests if failed to print backend logs.
+add maybe coverage , so when failed
 
 add user login, have flow withouth gmail. but maybe impl together with gmail oath.
 
