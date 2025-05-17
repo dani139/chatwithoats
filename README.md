@@ -43,6 +43,10 @@ Once created, tools can be assigned to chat settings via:
 
 For information about running tests and test organization, see the [Tests Documentation](tests/README.md).
 
+## Setup Fixes
+for sql reads, find command so i wont need to press enter, it gets stuck.
+have it clear logs before running docker every time.
+
 ## Future
 
 change tests now that tools changed.

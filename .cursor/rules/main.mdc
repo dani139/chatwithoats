@@ -15,7 +15,7 @@ Rebuil all: `docker compose -f docker-compose.dev.yml up --build -d`
 Status check: `docker compose -f docker-compose.dev.yml ps`
 Database query: `docker compose -f docker-compose.dev.yml exec postgres psql -U admin -d chatwithoats -c "SELECT * FROM portal_users;"`
 
-DATABASE_URL=postgresql://admin:iamhipste
+DATABASE_URL=postgresql://admin:iamhipster
 
 **Note:** After making code changes, check the logs to see if the change was made correctly. If encouter errors, fix them, and check again until fixed.
 

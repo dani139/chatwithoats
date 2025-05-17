@@ -6,6 +6,8 @@ import uuid
 from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 from sqlalchemy.orm import Session
+from urllib.parse import urlparse
+import re
 
 from models import Message, Conversation, ChatSettings, Tool, ToolType, MessageType
 
@@ -387,19 +389,46 @@ class OpenAIHelper:
                                 logger.warning(f"API request not found for tool: {tool.id}")
                                 continue
                             
-                            # Generate a simple name for the function based on tool name or API path
-                            simple_name = tool.name or f"api_{api_request.path.split('/')[-1].replace('-', '_')}"
+                            # Generate a descriptive name that indicates server, endpoint, and method
+                            # but doesn't include the pipe character which isn't allowed by OpenAI
+                            server_name = "unknown"
+                            endpoint = "unknown"
+                            method = api_request.method.lower() if api_request.method else "post"
+                            
+                            # Extract server name from URL if possible
+                            if hasattr(api_request, 'url') and api_request.url:
+                                try:
+                                    url_parts = urlparse(api_request.url)
+                                    server_name = url_parts.netloc.split('.')[0]
+                                    path_parts = url_parts.path.strip('/').split('/')
+                                    if path_parts and path_parts[0]:
+                                        endpoint = path_parts[0]
+                                except Exception as e:
+                                    logger.warning(f"Failed to parse URL for tool {tool.id}: {e}")
+                            
+                            # Use API path as fallback for endpoint
+                            if endpoint == "unknown" and api_request.path:
+                                endpoint = api_request.path.strip('/').split('/')[0]
+                            
+                            # Create formatted name: server_endpoint_method_id
+                            # OpenAI requires tool names to match pattern '^[a-zA-Z0-9_-]+$'
+                            # So we'll use underscores and avoid special characters
+                            formatted_name = f"{server_name}_{endpoint}_{method}_{tool.id[:8]}"
                             
                             # Clean up the name to ensure it's valid for OpenAI
-                            simple_name = self._sanitize_tool_name(simple_name)
+                            tool_name = self._sanitize_tool_name(formatted_name)
                             
-                            # Log the simple name being used
-                            logger.info(f"[OpenAI Helper] Using simple function name for API tool: {simple_name}")
+                            # Store the mapping of this name to the full tool ID
+                            # This will be used by _execute_tool to look up the tool by ID
+                            self._register_tool_name_mapping(tool_name, tool.id)
+                            
+                            # Log the formatted name being used
+                            logger.info(f"[OpenAI Helper] Using formatted function name for API tool: {tool_name}")
                             
                             # Format as per OpenAI's expected structure
                             function_def = {
                                 "type": "function",
-                                "name": simple_name,
+                                "name": tool_name,
                                 "description": tool.description or api_request.description or f"Call {api_request.path}"
                             }
                             
@@ -416,16 +445,23 @@ class OpenAIHelper:
                                 # Build parameters from API request
                                 function_def["parameters"] = self._build_parameters_from_api_request(api_request)
                             
+                            # Log the full function definition if it's a speech tool
+                            if "speech" in tool_name.lower() or "audio" in tool_name.lower():
+                                logger.info(f"[OpenAI Helper] Speech tool function definition for OpenAI: {json.dumps(function_def, indent=2)}")
+
                             openai_tools.append(function_def)
                         elif tool.function_schema:
                             # Custom function tool with direct schema
                             # Make a deep copy to avoid modifying the original
                             function_schema = tool.function_schema.copy() if isinstance(tool.function_schema, dict) else {}
                             
-                            # Get a valid tool name
-                            valid_name = self._sanitize_tool_name(
-                                function_schema.get("name") or tool.name or f"custom_function_{tool.id[:8]}"
-                            )
+                            # Get a valid tool name with ID for lookup
+                            # Format: custom_functionname_id where id is first 8 chars of the UUID
+                            tool_name = f"custom_{tool.name or 'function'}_{tool.id[:8]}"
+                            valid_name = self._sanitize_tool_name(tool_name)
+                            
+                            # Store the mapping of this name to the full tool ID
+                            self._register_tool_name_mapping(valid_name, tool.id)
                             
                             function_def = {
                                 "type": "function",
@@ -442,7 +478,11 @@ class OpenAIHelper:
                             openai_tools.append(function_def)
                         else:
                             # Fallback for function tools without schema
-                            valid_name = self._sanitize_tool_name(tool.name or f"function_{tool.id[:8]}")
+                            tool_name = f"function_{tool.id[:8]}"
+                            valid_name = self._sanitize_tool_name(tool_name)
+                            
+                            # Store the mapping of this name to the full tool ID
+                            self._register_tool_name_mapping(valid_name, tool.id)
                             
                             function_def = {
                                 "type": "function",
@@ -462,28 +502,32 @@ class OpenAIHelper:
     
     def _sanitize_tool_name(self, name: str) -> str:
         """
-        Sanitize a tool name to match the pattern '^[a-zA-Z0-9_-]+$' required by OpenAI.
+        Sanitize a tool name to ensure it's valid for OpenAI API.
+        The name must match the pattern '^[a-zA-Z0-9_-]+$'
         
         Args:
             name: The original tool name
             
         Returns:
-            A sanitized name that matches the pattern
+            A sanitized tool name
         """
         if not name:
-            return "function_tool"
+            return "unnamed_tool"
         
         # Replace any characters that aren't alphanumeric, underscore, or hyphen
-        import re
         sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
         
         # Ensure it starts with a letter or underscore (not a number or hyphen)
         if sanitized and not (sanitized[0].isalpha() or sanitized[0] == '_'):
             sanitized = 'f_' + sanitized
+        
+        # Ensure it's not too long
+        if len(sanitized) > 64:
+            sanitized = sanitized[:64]
             
         # If somehow we end up with an empty string, use a default
         if not sanitized:
-            sanitized = "function_tool"
+            sanitized = "unnamed_tool"
             
         return sanitized
     
@@ -565,24 +609,66 @@ class OpenAIHelper:
             The response from the API call as a string
         """
         try:
-            config = tool.configuration
+            # Check if the API request exists
+            if not tool.api_request:
+                return f"Error: No API request associated with tool {tool.id} ({tool.name})"
             
-            # Extract endpoint, method, and server_url if available
-            endpoint = config.get("endpoint", "")
-            method = config.get("method", "GET").upper()
+            api_request = tool.api_request
+            config = tool.configuration or {}
+            
+            # Extract endpoint, method from API request
+            endpoint = api_request.path if hasattr(api_request, 'path') else ""
+            method = api_request.method.upper() if hasattr(api_request, 'method') and api_request.method else "GET"
+            
+            # First try to get server_url from the tool configuration
             server_url = config.get("server_url", "")
+            
+            # If not in config, try to get from api_request's url attribute (legacy)
+            if not server_url and hasattr(api_request, 'url') and api_request.url:
+                # Try to extract the server URL from the full URL
+                try:
+                    url_parts = urlparse(api_request.url)
+                    server_url = f"{url_parts.scheme}://{url_parts.netloc}"
+                except Exception as e:
+                    logger.warning(f"Failed to parse URL from API request: {e}")
+            
+            # If still not found, try to get from the linked API object
+            if not server_url and hasattr(api_request, 'api') and api_request.api:
+                if hasattr(api_request.api, 'server') and api_request.api.server:
+                    server_url = api_request.api.server
+                    logger.info(f"Using server URL from linked API: {server_url}")
             
             # Construct full URL
             full_url = f"{server_url}{endpoint}" if server_url else endpoint
             
+            if not full_url:
+                return f"Error: Could not determine URL for API request {api_request.id}"
+            
+            # Check for missing protocol
+            if not full_url.startswith(('http://', 'https://')):
+                return f"Error: Invalid URL {full_url}. URL must start with http:// or https://"
+            
             # Prepare request parameters
             headers, params, body = self._prepare_request_params(config, arguments)
+            
+            # Add function arguments to the body if we have a request_body_schema
+            if hasattr(api_request, 'request_body_schema') and api_request.request_body_schema:
+                # Extract parameters from arguments based on the schema
+                schema = api_request.request_body_schema
+                if isinstance(schema, dict) and "properties" in schema:
+                    for prop_name in schema.get("properties", {}):
+                        if prop_name in arguments:
+                            body[prop_name] = arguments[prop_name]
             
             # Log the request details
             logger.info(f"Executing API tool {tool.name} ({tool.id}): {method} {full_url}")
             logger.info(f"Headers: {headers}")
             logger.info(f"Params: {params}")
-            logger.info(f"Body: {body}")
+            logger.info(f"Body: {json.dumps(body)}") # Log the actual body being sent
+            
+            # If it's a speech tool, log the received arguments from LLM
+            if "speech" in tool.name.lower() or (hasattr(api_request, 'path') and "audio" in api_request.path.lower()):
+                logger.info(f"[OpenAI Helper] LLM provided arguments for speech tool ({tool.name}): {json.dumps(arguments, indent=2)}")
             
             # Add OpenAI API key if needed
             if "openai.com" in full_url:
@@ -692,28 +778,68 @@ class OpenAIHelper:
         Returns:
             Processed response as a string
         """
-        # Check for binary data (like audio files)
-        content_type = response.headers.get("content-type", "")
+        content_type = response.headers.get("content-type", "").lower()
         
-        # Special handling for audio responses from speech API
-        if "audio/mpeg" in content_type or "audio/mp3" in content_type or "/audio/" in url:
-            # For audio responses, save to a file and return the path
-            file_id = str(uuid.uuid4())
-            file_path = f"/tmp/speech_{file_id}.mp3"
-            
-            with open(file_path, "wb") as f:
-                f.write(response.content)
-            
-            return f"Audio file generated and saved as {file_path}. You can listen to it or download it."
+        # Define a mapping for common audio content types to file extensions
+        audio_type_to_extension = {
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/opus": ".opus",
+            "audio/aac": ".aac",
+            "audio/flac": ".flac",
+            "audio/wav": ".wav",
+            "audio/wave": ".wav",
+            "audio/ogg": ".ogg",
+            # Add more mappings as needed
+        }
         
-        # For JSON responses
+        file_extension = None
+        for audio_type, ext in audio_type_to_extension.items():
+            if audio_type in content_type:
+                file_extension = ext
+                break
+        
+        # If we determined a file extension or the URL suggests audio, treat as audio
+        is_audio_response = file_extension is not None or "/audio/" in url.lower()
+        
+        if is_audio_response:
+            # If we couldn't determine extension from content-type but URL implies audio,
+            # default to .audio or a generic binary extension, or perhaps try to guess from URL path.
+            # For now, let's default to .mp3 if URL implies audio but type is unknown/unmapped.
+            if not file_extension and "/audio/" in url.lower():
+                logger.warning(f"Could not determine specific audio type for {url} with content-type {content_type}, defaulting to .mp3 due to /audio/ in URL.")
+                file_extension = ".mp3"
+            elif not file_extension:
+                # This case means content_type wasn't in our map and /audio/ not in URL, 
+                # but is_audio_response was true (which is now impossible based on logic above).
+                # However, to be safe, or if logic changes:
+                logger.warning(f"Unmapped audio content type: {content_type} for URL {url}. Cannot save with specific extension.")
+                # Fall through to JSON/text processing or return raw content if necessary.
+                pass # Let it be handled by JSON/text processing below
+
+            if file_extension: # Proceed if we have an extension
+                file_id = str(uuid.uuid4())
+                # Using a generic name prefix for now, could be derived from tool name or URL later
+                file_path = f"/tmp/api_audio_output_{file_id}{file_extension}"
+                
+                try:
+                    with open(file_path, "wb") as f:
+                        f.write(response.content)
+                    logger.info(f"Saved audio response from {url} to {file_path} (Content-Type: {content_type})")
+                    return f"Audio file generated and saved as {file_path}. You can listen to it or download it."
+                except Exception as e:
+                    logger.error(f"Failed to save audio file {file_path}: {e}")
+                    # Fall through to default JSON/text processing if saving fails
+
+        # For JSON responses (if not handled as audio)
         if "application/json" in content_type:
             try:
                 return json.dumps(response.json(), indent=2)
-            except:
+            except json.JSONDecodeError:
+                logger.warning(f"Content-Type is application/json but failed to decode JSON from {url}. Returning raw text.")
                 return response.text
         
-        # For text responses
+        # For text responses (default fallback)
         return response.text
 
     async def handle_tool_calls(
@@ -748,9 +874,10 @@ class OpenAIHelper:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
-                logger.info(f"Processing tool call: {function_name} with args: {function_args}")
+                # Log the original function name received from OpenAI
+                logger.info(f"Processing tool call with original name: {function_name}")
                 
-                # Record the tool call
+                # Record the tool call - store the original function name as received from OpenAI
                 tool_call_msg = self._create_tool_call_message(
                     conversation.chatid, tool_call_id, function_name, function_args
                 )
@@ -760,10 +887,11 @@ class OpenAIHelper:
                 db.commit()
                 messages.append(tool_call_msg)
                 
-                # Execute the tool
+                # Execute the tool with the function name as received from OpenAI
+                # The _execute_tool function will extract the tool ID if present
                 function_result = await self._execute_tool(conversation, function_name, function_args)
                 
-                # Record the tool result
+                # Record the tool result - still use the original function name for consistency
                 tool_result_msg = self._create_tool_result_message(
                     conversation.chatid, tool_call_id, function_name, function_result
                 )
@@ -851,21 +979,38 @@ class OpenAIHelper:
         
         Args:
             conversation: The conversation
-            function_name: The function name
+            function_name: The function name as received from OpenAI
             function_args: The function arguments
             
         Returns:
             The result of the tool execution
         """
+        # Get the tool ID from the function name using our mapping
+        tool_id = self._get_tool_id_by_name(function_name)
+        
         # Find the tool in the database
         tool = None
-        for t in conversation.chat_settings.tools:
-            if t.name == function_name:
-                tool = t
-                break
+        
+        # First try to find by ID if we found one from the mapping
+        if tool_id:
+            for t in conversation.chat_settings.tools:
+                if t.id == tool_id:
+                    tool = t
+                    logger.info(f"Found tool by ID: {tool_id}")
+                    break
+        
+        # Fallback: search by name (for backward compatibility)
+        if not tool:
+            for t in conversation.chat_settings.tools:
+                if t.name == function_name:
+                    tool = t
+                    logger.info(f"Found tool by name: {function_name}")
+                    break
         
         if not tool:
-            return "Tool not found."
+            error_msg = f"Tool not found for function: {function_name}"
+            logger.error(error_msg)
+            return error_msg
         
         # Check if this is an API-linked function
         if tool.api_request_id:
@@ -967,10 +1112,11 @@ class OpenAIHelper:
             if not tool_call_id or not function_name or not function_args:
                 logger.warning(f"Skipping invalid tool call: {tool_call}")
                 continue
-                
-            logger.info(f"Processing tool call: {function_name} with args: {function_args}")
             
-            # Record the tool call
+            # Log the original function name received from OpenAI
+            logger.info(f"Processing tool call with original name: {function_name}")
+                
+            # Record the tool call - store the original function name as received from OpenAI
             tool_call_msg = self._create_tool_call_message(
                 conversation.chatid, tool_call_id, function_name, function_args
             )
@@ -980,10 +1126,11 @@ class OpenAIHelper:
             db.commit()
             messages.append(tool_call_msg)
             
-            # Execute the tool
+            # Execute the tool with the function name as received from OpenAI
+            # The _execute_tool function will extract the tool ID if present
             function_result = await self._execute_tool(conversation, function_name, function_args)
             
-            # Record the tool result
+            # Record the tool result - still use the original function name for consistency
             tool_result_msg = self._create_tool_result_message(
                 conversation.chatid, tool_call_id, function_name, function_result
             )
@@ -995,6 +1142,53 @@ class OpenAIHelper:
         
         logger.info(f"Processed {len(messages) // 2} tool calls")
         return messages
+
+    def _register_tool_name_mapping(self, tool_name: str, tool_id: str) -> None:
+        """
+        Store a mapping between tool name (used with OpenAI) and the actual tool ID.
+        
+        Args:
+            tool_name: The sanitized tool name used with OpenAI
+            tool_id: The actual tool ID in the database
+        """
+        # Initialize the mapping dict if it doesn't exist yet
+        if not hasattr(self, '_tool_name_to_id_map'):
+            self._tool_name_to_id_map = {}
+            
+        # Store the mapping
+        self._tool_name_to_id_map[tool_name] = tool_id
+        logger.info(f"Registered tool name mapping: {tool_name} -> {tool_id}")
+        
+    def _get_tool_id_by_name(self, function_name: str) -> Optional[str]:
+        """
+        Get the tool ID from the function name.
+        
+        Args:
+            function_name: The function name received from OpenAI
+            
+        Returns:
+            The corresponding tool ID if found, None otherwise
+        """
+        # Check if we have a direct mapping
+        if hasattr(self, '_tool_name_to_id_map') and function_name in self._tool_name_to_id_map:
+            tool_id = self._tool_name_to_id_map[function_name]
+            logger.info(f"Found tool ID {tool_id} for function name {function_name}")
+            return tool_id
+            
+        # Legacy support - try to extract ID from the end of the name (assuming format like name_id)
+        parts = function_name.split('_')
+        if len(parts) > 1:
+            # Try the last part as a potential tool ID prefix
+            potential_id_prefix = parts[-1]
+            if hasattr(self, '_tool_name_to_id_map'):
+                # Look for any tool ID that starts with this prefix
+                for tool_id in self._tool_name_to_id_map.values():
+                    if tool_id.startswith(potential_id_prefix):
+                        logger.info(f"Found tool ID {tool_id} for function name {function_name} via prefix match")
+                        return tool_id
+                        
+        logger.warning(f"Could not find tool ID for function name: {function_name}")
+        return None
 
 # Create a singleton instance of OpenAIHelper
 # Read the API key directly from the .env file to bypass any environment caching issues

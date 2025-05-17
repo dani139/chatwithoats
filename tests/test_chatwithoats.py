@@ -298,7 +298,7 @@ class SpeechToolTest(ChatWithOatsTest):
                                 "enum": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
                             }
                         },
-                        "required": ["input"]
+                        "required": ["input", "model", "voice"]
                     }
                 }
             }
