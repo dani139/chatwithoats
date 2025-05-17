@@ -123,9 +123,9 @@ def test_format_function_tool():
     
     assert len(formatted_tools) == 1
     assert formatted_tools[0]["type"] == "function"
-    assert formatted_tools[0]["function"]["name"] == "sample_function"
-    assert "parameters" in formatted_tools[0]["function"]
-    assert formatted_tools[0]["function"]["parameters"]["required"] == ["query"]
+    assert "sample_function" in formatted_tools[0]["name"]
+    assert "parameters" in formatted_tools[0]
+    assert formatted_tools[0]["parameters"]["required"] == ["query"]
     
     logger.info(f"✓ Function tool correctly formatted as: {json.dumps(formatted_tools[0])}")
 
@@ -139,7 +139,7 @@ def test_function_tool_without_name():
     formatted_tools = helper.format_tools_for_openai([tool])
     
     assert len(formatted_tools) == 1
-    assert formatted_tools[0]["function"]["name"] == "sample_function"
+    assert "sample_function" in formatted_tools[0]["name"]
     
     logger.info(f"✓ Function tool without name in schema correctly gets name from tool object")
 
@@ -153,9 +153,9 @@ def test_missing_params():
     formatted_tools = helper.format_tools_for_openai([tool])
     
     assert len(formatted_tools) == 1
-    assert "parameters" in formatted_tools[0]["function"]
-    assert formatted_tools[0]["function"]["parameters"]["type"] == "object"
-    assert "properties" in formatted_tools[0]["function"]["parameters"]
+    assert "parameters" in formatted_tools[0]
+    assert formatted_tools[0]["parameters"]["type"] == "object"
+    assert "properties" in formatted_tools[0]["parameters"]
     
     logger.info(f"✓ Function tool with missing parameters gets default parameters object")
 
@@ -168,13 +168,14 @@ def test_api_linked_tool():
     
     assert len(formatted_tools) == 1
     assert formatted_tools[0]["type"] == "function"
-    assert "name" in formatted_tools[0]["function"]
-    assert formatted_tools[0]["function"]["name"] == "api_test"
-    assert "parameters" in formatted_tools[0]["function"]
-    assert "properties" in formatted_tools[0]["function"]["parameters"]
-    assert "param1" in formatted_tools[0]["function"]["parameters"]["properties"]
-    assert "required" in formatted_tools[0]["function"]["parameters"]
-    assert "param1" in formatted_tools[0]["function"]["parameters"]["required"]
+    assert "name" in formatted_tools[0]
+    assert "test-endpoint" in formatted_tools[0]["name"] or "test_endpoint" in formatted_tools[0]["name"]
+    assert "post" in formatted_tools[0]["name"].lower()
+    assert "parameters" in formatted_tools[0]
+    assert "properties" in formatted_tools[0]["parameters"]
+    assert "param1" in formatted_tools[0]["parameters"]["properties"]
+    assert "required" in formatted_tools[0]["parameters"]
+    assert "param1" in formatted_tools[0]["parameters"]["required"]
     
     logger.info(f"✓ API-linked tool correctly formatted with parameters from request schema")
 
@@ -192,10 +193,11 @@ def test_mixed_tools():
     assert formatted_tools[0]["type"] == "web_search_preview"
     # Second should be function
     assert formatted_tools[1]["type"] == "function"
-    assert formatted_tools[1]["function"]["name"] == "sample_function"
+    assert "sample_function" in formatted_tools[1]["name"]
     # Third should be API-linked function
     assert formatted_tools[2]["type"] == "function"
-    assert formatted_tools[2]["function"]["name"] == "api_test"
+    assert "test-endpoint" in formatted_tools[2]["name"] or "test_endpoint" in formatted_tools[2]["name"]
+    assert "post" in formatted_tools[2]["name"].lower()
     
     logger.info(f"✓ Multiple tool types correctly formatted")
 

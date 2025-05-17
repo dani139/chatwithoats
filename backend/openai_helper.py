@@ -63,6 +63,7 @@ class OpenAIHelper:
         Returns:
             The text response from OpenAI
         """
+        logger.info(f"[OpenAI Helper] ENTERING get_openai_response for conversation {conversation.chatid}, user message: {user_message.id}")
         try:
             # Get chat settings for the conversation
             chat_settings = conversation.chat_settings
@@ -76,9 +77,11 @@ class OpenAIHelper:
             # Get enabled tools for this chat
             tools = self._get_tools_for_chat(conversation.chatid, chat_settings)
             
-            # Make the API call to OpenAI
-            logger.info(f"[OpenAI Helper] get_openai_response called with model: {chat_settings.model if chat_settings else 'default'} and key: {self.masked_key}")
-            logger.info(f"[OpenAI Helper] Tool payload: {tools}")
+            # Log formatted_messages, tools, and tool_choice before API call
+            logger.info(f"[OpenAI Helper] Formatted messages for OpenAI: {json.dumps(formatted_messages, indent=2)}")
+            logger.info(f"[OpenAI Helper] Tools for OpenAI API call: {json.dumps(tools, indent=2)}")
+            actual_tool_choice = "auto" if tools else None
+            logger.info(f"[OpenAI Helper] Tool choice for OpenAI API call: {actual_tool_choice}")
             
             # Final check to ensure all function tools have a name
             if tools:
@@ -91,13 +94,35 @@ class OpenAIHelper:
                 
                 logger.info(f"[OpenAI Helper] Final tool payload for Responses API: {json.dumps(tools)}")
             
-            response = self.client.responses.create(
-                model=chat_settings.model,
-                input=formatted_messages,
-                tools=tools if tools else None,
-                # Use 'auto' for tool_choice instead of a specific type
-                tool_choice="auto" if tools else None
-            )
+            logger.info(f"[OpenAI Helper] PREPARING TO CALL OpenAI Responses API with model: {chat_settings.model}")
+            response = None # Initialize response to None
+            try:
+                response = self.client.responses.create(
+                    model=chat_settings.model,
+                    input=formatted_messages,
+                    tools=tools if tools else None,
+                    tool_choice=actual_tool_choice
+                )
+            except httpx.HTTPStatusError as e_http:
+                logger.error(f"[OpenAI Helper] HTTPStatusError during OpenAI API call: {e_http}")
+                logger.error(f"[OpenAI Helper] HTTPStatusError response: {e_http.response.text if e_http.response else 'No response body'}")
+                return f"I encountered an HTTP error: {e_http.response.status_code if e_http.response else 'Unknown status'} - {e_http.response.text if e_http.response else 'Details unavailable'}"
+            except Exception as e_sdk_call: # Catch any other exceptions during the call
+                logger.error(f"[OpenAI Helper] Exception during OpenAI API call (self.client.responses.create): {str(e_sdk_call)}")
+                return f"I'm sorry, I couldn't connect to the AI service: {str(e_sdk_call)}"
+            
+            # Log the raw response from OpenAI
+            logger.info("[OpenAI Helper] Attempting to log Raw OpenAI API response...")
+            try:
+                raw_response_data = response.model_dump_json(indent=2)
+                logger.info(f"[OpenAI Helper] Raw OpenAI API response: {raw_response_data}")
+            except Exception as e_dump:
+                logger.error(f"[OpenAI Helper] Error serializing raw OpenAI response with model_dump_json: {str(e_dump)}")
+                try:
+                    logger.info(f"[OpenAI Helper] Raw OpenAI API response (fallback using repr): {repr(response)}")
+                except Exception as e_repr:
+                    logger.error(f"[OpenAI Helper] Error serializing raw OpenAI response with repr: {str(e_repr)}")
+            logger.info("[OpenAI Helper] Raw OpenAI API response END")
             
             # Debug logging for the response
             logger.info(f"[OpenAI Helper] Response object type: {type(response)}")
@@ -139,69 +164,33 @@ class OpenAIHelper:
             
             # Check for tool_calls in different possible locations
             has_tool_calls = False
-            tool_calls = []
+            tool_calls = [] # This will store the extracted calls
             
-            # Check if output has tool calls - this is the standard location
-            if hasattr(response, "output"):
-                logger.info(f"[OpenAI Helper] Response has output attribute: {type(response.output)}")
-                
-                # Check if output is a list (array of tool calls)
-                if isinstance(response.output, list):
-                    # Extract function calls from the output array
-                    function_calls = []
-                    for item in response.output:
-                        # Check if it's a dictionary or an object
-                        if isinstance(item, dict) and item.get('type') == 'function_call':
-                            function_calls.append(item)
-                        # Check for ResponseFunctionToolCall with type="function_call"
-                        elif hasattr(item, 'type') and getattr(item, 'type') == 'function_call':
-                            function_calls.append(item)
-                        # Check for legacy format with type="function"
-                        elif hasattr(item, 'type') and getattr(item, 'type') == 'function':
-                            function_calls.append(item)
+            # Standard location for tool calls in openai >= 1.x SDK is response.output (list)
+            if hasattr(response, "output") and isinstance(response.output, list):
+                logger.info(f"[OpenAI Helper] Response has output attribute (list with {len(response.output)} items)")
+                extracted_function_calls = []
+                for item in response.output:
+                    item_type = None
+                    if isinstance(item, dict):
+                        item_type = item.get('type')
+                    elif hasattr(item, 'type'):
+                        item_type = getattr(item, 'type')
                     
-                    if function_calls:
-                        has_tool_calls = True
-                        tool_calls = function_calls
-                        logger.info(f"[OpenAI Helper] Found {len(function_calls)} function calls in response.output list")
-            
-            # Also check if output has a tool_calls attribute
-            elif hasattr(response.output, "tool_calls"):
-                has_tool_calls = True
-                tool_calls = response.output.tool_calls
-                logger.info(f"[OpenAI Helper] Found tool_calls in response.output")
-            
-            # Direct tool_calls (legacy or alternate format)
-            elif hasattr(response, "tool_calls"):
-                has_tool_calls = True
-                tool_calls = response.tool_calls
-                logger.info(f"[OpenAI Helper] Found tool_calls directly on response")
-            
-            logger.info(f"[OpenAI Helper] Response has tool_calls: {has_tool_calls}")
-            
-            if has_tool_calls and tool_calls:
-                logger.info(f"[OpenAI Helper] Number of tool calls: {len(tool_calls)}")
-                for i, tool_call in enumerate(tool_calls):
-                    # Handle both object-style and dict-style tool calls
-                    if isinstance(tool_call, dict):
-                        logger.info(f"[OpenAI Helper] Tool call {i} (dict): type={tool_call.get('type')}, id={tool_call.get('id')}")
-                        if tool_call.get('type') == 'function_call':
-                            logger.info(f"[OpenAI Helper] Function name: {tool_call.get('name')}")
-                            logger.info(f"[OpenAI Helper] Function arguments: {tool_call.get('arguments')}")
+                    if item_type == 'function_call':
+                        extracted_function_calls.append(item)
                     else:
-                        # For object-style calls, use getattr instead of get()
-                        logger.info(f"[OpenAI Helper] Tool call {i} (object): type={getattr(tool_call, 'type', None)}, id={getattr(tool_call, 'id', None)}")
-                        if getattr(tool_call, 'type', None) == 'function':
-                            function_attr = getattr(tool_call, 'function', None)
-                            if function_attr:
-                                logger.info(f"[OpenAI Helper] Function name: {getattr(function_attr, 'name', None)}")
-                                logger.info(f"[OpenAI Helper] Function arguments: {getattr(function_attr, 'arguments', None)}")
-                        elif hasattr(tool_call, 'function') and tool_call.function:
-                            # Handle ResponseFunctionToolCall objects
-                            logger.info(f"[OpenAI Helper] Function name: {getattr(tool_call.function, 'name', None)}")
-                            logger.info(f"[OpenAI Helper] Function arguments: {getattr(tool_call.function, 'arguments', None)}")
+                        logger.info(f"[OpenAI Helper] Skipping item in response.output of type: {item_type}")
+                
+                if extracted_function_calls:
+                    has_tool_calls = True
+                    tool_calls = extracted_function_calls
+                    logger.info(f"[OpenAI Helper] Found {len(tool_calls)} function_call(s) in response.output list")
+            else:
+                logger.info("[OpenAI Helper] No tool calls found in response.output list or response.output is not a list.")
             
-            # Check if the response contains tool calls and process them
+            logger.info(f"[OpenAI Helper] After checks, Response has tool_calls: {has_tool_calls}")
+            
             if has_tool_calls and tool_calls:
                 logger.info(f"Response contains {len(tool_calls)} tool calls")
                 
@@ -288,7 +277,7 @@ class OpenAIHelper:
                 # This represents the models decision to call a function from history.
                 tool_call_object = {
                     "type": "function_call",
-                    "id": msg.openai_tool_call_id,    # Use the stored fc_... ID from OpenAI's original tool_call
+                    "id": msg.openai_tool_call_id,    # Use the stored fc_... ID from OpenAI\'s original tool_call
                     "call_id": msg.tool_call_id,     # Use the stored call_... ID for linking
                     "name": msg.openai_function_name,  # MUST be the name OpenAI knows
                     "arguments": msg.function_arguments
@@ -342,6 +331,7 @@ class OpenAIHelper:
         else:
             logger.warning(f"No tools found for chat settings {chat_settings.id}")
         
+        logger.info(f"[OpenAI Helper] _get_tools_for_chat returning: {json.dumps(tools)}")
         return tools
     
     def format_tools_for_openai(self, tools: List[Tool]) -> List[Dict[str, Any]]:
@@ -357,6 +347,7 @@ class OpenAIHelper:
         openai_tools = []
         
         for tool in tools:
+            logger.info(f"[OpenAI Helper] Processing tool in format_tools_for_openai: ID={tool.id}, Name={tool.name}, SkipParams={tool.skip_params}")
             try:
                 # Use tool_type if available, otherwise fallback to old structure for backward compatibility
                 if tool.tool_type:
@@ -383,41 +374,108 @@ class OpenAIHelper:
                                 logger.warning(f"API request not found for tool: {tool.id}")
                                 continue
                             
-                            # Generate a descriptive name that indicates server, endpoint, and method
-                            # but doesn't include the pipe character which isn't allowed by OpenAI
-                            server_name = "unknown"
-                            endpoint = "unknown"
-                            method = api_request.method.lower() if api_request.method else "post"
-                            
-                            # Extract server name from URL if possible
-                            if hasattr(api_request, 'url') and api_request.url:
+                            # Initialize name components
+                            server_name_str = "unknown_server"
+                            version_str = ""
+                            endpoint_str = "unknown_endpoint"
+                            method_str = (api_request.method.lower() if api_request.method else "post")
+
+                            # Determine the primary URL to parse for server
+                            url_to_parse_for_server = None
+                            # Priority 1: Server URL from the linked API object (more static and reliable)
+                            if hasattr(api_request, 'api') and api_request.api and \
+                               hasattr(api_request.api, 'server') and api_request.api.server:
+                                url_to_parse_for_server = api_request.api.server
+                            # Priority 2: URL directly on the ApiRequest object (might be less common or more dynamic)
+                            elif hasattr(api_request, 'url') and api_request.url:
+                                url_to_parse_for_server = api_request.url
+
+                            if url_to_parse_for_server:
                                 try:
-                                    url_parts = urlparse(api_request.url)
-                                    server_name = url_parts.netloc.split('.')[0]
-                                    path_parts = url_parts.path.strip('/').split('/')
-                                    if path_parts and path_parts[0]:
-                                        endpoint = path_parts[0]
+                                    parsed_server_url = urlparse(url_to_parse_for_server)
+                                    if parsed_server_url.netloc:
+                                        # Replace dots with underscores for the server name part
+                                        server_name_str = parsed_server_url.netloc.replace('.', '_')
+                                        # Remove common TLDs (e.g., _com, _org) and other generic suffixes
+                                        common_suffixes = ['_com', '_org', '_net', '_io', '_ai', '_co_uk', '_gov', '_info', '_biz']
+                                        for suffix in common_suffixes:
+                                            if server_name_str.endswith(suffix):
+                                                server_name_str = server_name_str[:-len(suffix)]
+                                                break # Stop after removing one suffix
                                 except Exception as e:
-                                    logger.warning(f"Failed to parse URL for tool {tool.id}: {e}")
+                                    logger.warning(f"Failed to parse server URL '{url_to_parse_for_server}' for tool {tool.id}: {e}")
                             
-                            # Use API path as fallback for endpoint
-                            if endpoint == "unknown" and api_request.path:
-                                endpoint = api_request.path.strip('/').split('/')[0]
+                            # Determine the primary path to parse for version and endpoint
+                            path_to_parse_for_endpoint = None
+                            # Priority 1: Path from the ApiRequest object itself (most specific)
+                            if api_request.path and api_request.path.strip() and api_request.path.strip() != '/':
+                                path_to_parse_for_endpoint = api_request.path
+                            # Priority 2: Path from the ApiRequest URL (if path above was not specific)
+                            elif hasattr(api_request, 'url') and api_request.url:
+                                try:
+                                    parsed_req_url_path = urlparse(api_request.url).path
+                                    if parsed_req_url_path and parsed_req_url_path.strip() and parsed_req_url_path.strip() != '/':
+                                        path_to_parse_for_endpoint = parsed_req_url_path
+                                except Exception: # nosemgrep
+                                    pass # Silently ignore parsing error here, rely on other fallbacks or defaults
                             
-                            # Create formatted name: server_endpoint_method_id
-                            # OpenAI requires tool names to match pattern '^[a-zA-Z0-9_-]+$'
-                            # So we'll use underscores and avoid special characters
-                            formatted_name = f"{server_name}_{endpoint}_{method}_{tool.id[:8]}"
+                            # Priority 3: Path from the server URL (least specific, e.g. if server is http://host/api/v1)
+                            if not path_to_parse_for_endpoint and url_to_parse_for_server:
+                                try:
+                                    parsed_server_url_path = urlparse(url_to_parse_for_server).path
+                                    if parsed_server_url_path and parsed_server_url_path.strip() and parsed_server_url_path.strip() != '/':
+                                        path_to_parse_for_endpoint = parsed_server_url_path
+                                except Exception: # nosemgrep
+                                    pass # Silently ignore
+
+                            if path_to_parse_for_endpoint:
+                                path_segments = path_to_parse_for_endpoint.strip('/').split('/')
+                                if path_segments and path_segments[0]: # Check if there are any segments
+                                    # Check for version-like first segment (e.g., v1, v2.0, v1beta)
+                                    if re.match(r'^v[0-9]+(?:[a-zA-Z0-9._-]*)$', path_segments[0]):
+                                        version_str = path_segments[0]
+                                        endpoint_segments = path_segments[1:] # The rest are endpoint parts
+                                    else:
+                                        endpoint_segments = path_segments # No version prefix, all are endpoint parts
+                                    
+                                    current_endpoint_str = '_'.join(segment for segment in endpoint_segments if segment)
+                                    if current_endpoint_str: # If we derived something meaningful
+                                        endpoint_str = current_endpoint_str
+                                    elif version_str: # Path was like "/v1/", endpoint is just base/root for that version
+                                        endpoint_str = "base_version_endpoint" 
+                                    # If no version_str and current_endpoint_str is empty, endpoint_str remains "unknown_endpoint"
+                                elif path_to_parse_for_endpoint.strip('/') == '': # Path was effectively "/"
+                                     endpoint_str = "root_api"
+                                # else: endpoint_str remains "unknown_endpoint" if path_segments was empty (e.g. path_to_parse was just "/")
+                            else: # No path information found at all
+                                endpoint_str = "general_action" # Fallback if no path info
+                                
+                            # Assemble the name components, filtering out defaults if better info exists
+                            name_parts = []
+                            if server_name_str != "unknown_server": name_parts.append(server_name_str)
+                            if version_str: name_parts.append(version_str)
+                            if endpoint_str != "unknown_endpoint": name_parts.append(endpoint_str)
+                            name_parts.append(method_str)
+
+                            if not name_parts or (len(name_parts) == 1 and name_parts[0] == method_str and server_name_str == "unknown_server" and endpoint_str == "unknown_endpoint" and not version_str) :
+                                # If all parts were default/empty except method, or list is empty for some reason
+                                formatted_name = f"generic_api_tool_{tool.id[:4]}" # Ultimate fallback to ensure some name
+                            else:
+                                formatted_name = '_'.join(name_parts)
                             
-                            # Clean up the name to ensure it's valid for OpenAI
+                            # Ensure no leading/trailing underscores and collapse multiple underscores
+                            formatted_name = re.sub(r'_+', '_', formatted_name).strip('_')
+                            if not formatted_name: # Still possible if all parts were filtered or became empty
+                                formatted_name = f"fallback_tool_name_{tool.id[:4]}"
+
+                            # Clean up the name to ensure it's valid for OpenAI (alphanumeric, _, -)
                             tool_name = self._sanitize_tool_name(formatted_name)
                             
                             # Store the mapping of this name to the full tool ID
-                            # This will be used by _execute_tool to look up the tool by ID
                             self._register_tool_name_mapping(tool_name, tool.id)
                             
                             # Log the formatted name being used
-                            logger.info(f"[OpenAI Helper] Using formatted function name for API tool: {tool_name}")
+                            logger.info(f"[OpenAI Helper] Using formatted function name for API tool: {tool_name} (maps to tool ID: {tool.id})")
                             
                             # Format as per OpenAI's expected structure
                             function_def = {
@@ -426,18 +484,34 @@ class OpenAIHelper:
                                 "description": tool.description or api_request.description or f"Call {api_request.path}"
                             }
                             
-                            # Check if we already have a complete function schema
-                            if tool.function_schema and isinstance(tool.function_schema, dict):
-                                function_schema = tool.function_schema.copy()
-                                
-                                # Extract parameters if they exist in the schema
-                                if "parameters" in function_schema:
-                                    function_def["parameters"] = function_schema["parameters"]
-                                else:
-                                    function_def["parameters"] = self._build_parameters_from_api_request(api_request)
+                            # Initialize parameters first
+                            if tool.function_schema and isinstance(tool.function_schema, dict) and "parameters" in tool.function_schema:
+                                function_def["parameters"] = tool.function_schema["parameters"].copy() # Get parameters from existing schema
                             else:
-                                # Build parameters from API request
-                                function_def["parameters"] = self._build_parameters_from_api_request(api_request)
+                                function_def["parameters"] = self._build_parameters_from_api_request(api_request) # Build from API request
+
+                            # Now, apply skip_params if they exist
+                            if tool.skip_params:
+                                current_parameters = function_def.get("parameters", {})
+                                filtered_properties = {}
+                                filtered_required = []
+                                
+                                if "properties" in current_parameters:
+                                    for prop_name, prop_schema in current_parameters["properties"].items():
+                                        if prop_name not in tool.skip_params:
+                                            filtered_properties[prop_name] = prop_schema
+                                
+                                if "required" in current_parameters:
+                                    for req_param in current_parameters["required"]:
+                                        if req_param not in tool.skip_params:
+                                            filtered_required.append(req_param)
+                                
+                                function_def["parameters"] = {
+                                    "type": "object",
+                                    "properties": filtered_properties,
+                                    "required": filtered_required
+                                }
+                                logger.info(f"[OpenAI Helper] Applied skip_params for tool {tool.id} (Name: {tool_name}). Original params: {current_parameters.get('properties', {}).keys()}, Skipped: {tool.skip_params}, Final params: {filtered_properties.keys()}")
                             
                             # Log the full function definition if it's a speech tool
                             if "speech" in tool_name.lower() or "audio" in tool_name.lower():
@@ -582,9 +656,9 @@ class OpenAIHelper:
         elif message.type == MessageType.TOOL_RESULT:
             # This is the result we are sending back
             formatted_messages.append({
-                "type": "function_call_output", 
+                "type": "function_call_output",
                 "call_id": message.tool_call_id, # Correctly uses call_... ID for linking output
-                "output": message.function_result 
+                "output": message.function_result
             })
         
         return formatted_messages
@@ -658,7 +732,23 @@ class OpenAIHelper:
             logger.info(f"Params: {params}")
             logger.info(f"Body: {json.dumps(body)}") # Log the actual body being sent
             
-            # If it's a speech tool, log the received arguments from LLM
+            # Special logging for image generation tool
+            if "/images/generations" in endpoint.lower() or "dall" in tool.name.lower():
+                logger.info(f"[OpenAI Helper] IMAGE GENERATION REQUEST DETAILS:")
+                logger.info(f"[OpenAI Helper] Complete URL: {full_url}")
+                logger.info(f"[OpenAI Helper] Method: {method}")
+                logger.info(f"[OpenAI Helper] Headers: {json.dumps(headers, indent=2)}")
+                logger.info(f"[OpenAI Helper] Body: {json.dumps(body, indent=2)}")
+                logger.info(f"[OpenAI Helper] Raw arguments from LLM: {json.dumps(arguments, indent=2)}")
+                
+                # Check required fields for image generation without modifying them
+                if 'model' not in body:
+                    logger.warning("[OpenAI Helper] No model specified for image generation. This request may fail.")
+                    
+                if 'prompt' not in body:
+                    logger.warning("[OpenAI Helper] No prompt specified for image generation. This request may fail.")
+            
+            # For speech tool, log the received arguments from LLM
             if "speech" in tool.name.lower() or (hasattr(api_request, 'path') and "audio" in api_request.path.lower()):
                 logger.info(f"[OpenAI Helper] LLM provided arguments for speech tool ({tool.name}): {json.dumps(arguments, indent=2)}")
             
@@ -666,6 +756,10 @@ class OpenAIHelper:
             if "openai.com" in full_url:
                 logger.info(f"[OpenAI Helper] Setting Authorization header for OpenAI API call with key: {self.masked_key}")
                 headers["Authorization"] = f"Bearer {self.api_key}"
+                
+                # For OpenAI, ensure Content-Type is set correctly
+                if method == "POST" or method == "PUT":
+                    headers["Content-Type"] = "application/json"
             
             # Make the API request based on method
             return await self._make_http_request(method, full_url, headers, params, body)
@@ -742,22 +836,43 @@ class OpenAIHelper:
         Returns:
             Response as a string
         """
-        async with httpx.AsyncClient() as client:
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params)
-            elif method == "POST":
-                response = await client.post(url, headers=headers, params=params, json=body)
-            elif method == "PUT":
-                response = await client.put(url, headers=headers, params=params, json=body)
-            elif method == "DELETE":
-                response = await client.delete(url, headers=headers, params=params)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
+        try:
+            logger.info(f"Making {method} request to {url}")
+            timeout_config = httpx.Timeout(60.0, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
+                if method == "GET":
+                    response = await client.get(url, headers=headers, params=params)
+                elif method == "POST":
+                    response = await client.post(url, headers=headers, params=params, json=body)
+                elif method == "PUT":
+                    response = await client.put(url, headers=headers, params=params, json=body)
+                elif method == "DELETE":
+                    response = await client.delete(url, headers=headers, params=params)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                # Check if the response was successful
+                response.raise_for_status()
+                
+                return self._process_response(response, url)
+        except httpx.HTTPStatusError as e:
+            # Log more detailed information about the failed request
+            error_msg = f"Error code: {e.response.status_code} - {e.response.text}"
+            logger.error(f"HTTP request failed: {error_msg}")
             
-            # Check if the response was successful
-            response.raise_for_status()
+            # For image generation requests, log more detailed information
+            if "/images/generations" in url:
+                logger.error(f"[OpenAI Helper] IMAGE GENERATION API CALL FAILED:")
+                logger.error(f"[OpenAI Helper] URL: {url}")
+                logger.error(f"[OpenAI Helper] Status code: {e.response.status_code}")
+                logger.error(f"[OpenAI Helper] Response headers: {e.response.headers}")
+                logger.error(f"[OpenAI Helper] Response body: {e.response.text}")
+                logger.error(f"[OpenAI Helper] Request body: {json.dumps(body, indent=2)}")
             
-            return self._process_response(response, url)
+            return error_msg
+        except Exception as e:
+            logger.error(f"Unexpected error during HTTP request: str(e)='{str(e)}', repr(e)='{repr(e)}'")
+            return f"Error making HTTP request: {str(e)}"
     
     def _process_response(self, response: httpx.Response, url: str) -> str:
         """
@@ -805,8 +920,6 @@ class OpenAIHelper:
                 # This case means content_type wasn't in our map and /audio/ not in URL, 
                 # but is_audio_response was true (which is now impossible based on logic above).
                 # However, to be safe, or if logic changes:
-                logger.warning(f"Unmapped audio content type: {content_type} for URL {url}. Cannot save with specific extension.")
-                # Fall through to JSON/text processing or return raw content if necessary.
                 pass # Let it be handled by JSON/text processing below
 
             if file_extension: # Proceed if we have an extension
@@ -1056,71 +1169,57 @@ class OpenAIHelper:
             # Handle dict-style tool calls (new API format)
             if isinstance(tool_call_from_openai, dict):
                 if tool_call_from_openai.get('type') == 'function_call':
-                    openai_fc_id = tool_call_from_openai.get('id')
-                    openai_call_id = tool_call_from_openai.get('call_id')
+                    openai_fc_id = tool_call_from_openai.get('id') # This is the fc_ ID from OpenAI
+                    openai_call_id = tool_call_from_openai.get('call_id') # This is the call_ ID for linking
                     
+                    # For Responses API, call_id is the primary one used by OpenAI for linking.
+                    # Ensure we have call_id. If fc_id (OpenAI's internal tool_call.id) is missing, we can log but proceed.
                     if not openai_call_id:
-                        logger.warning(f"Missing 'call_id' in dict tool_call: {tool_call_from_openai}, skipping.")
-                        continue 
+                        logger.warning(f"Missing 'call_id' in dict tool_call: {tool_call_from_openai}, attempting to use 'id' as call_id.")
+                        openai_call_id = openai_fc_id # Fallback, though not ideal for Responses API
                     if not openai_fc_id:
-                        logger.warning(f"Missing 'id' (fc_ id) in dict tool_call: {tool_call_from_openai}, skipping.")
-                        continue
+                        logger.warning(f"Missing 'id' (fc_ id) in dict tool_call: {tool_call_from_openai}. This ID is usually present.")
+                        # If fc_id is absolutely required later, this could be an issue.
 
                     current_openai_function_name = tool_call_from_openai.get('name')
-                    args = tool_call_from_openai.get('arguments')
-                    if isinstance(args, str):
-                        try:
-                            function_args = json.loads(args)
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse JSON arguments for dict tool_call {openai_call_id}. Args: {args}")
-                            function_args = {"error": "Failed to parse arguments", "arguments_string": args}
-                    else:
-                        function_args = args
-            
-            # Handle object-style tool calls (e.g. ResponseFunctionToolCall)
-            else:
-                tool_call_type = getattr(tool_call_from_openai, 'type', None)
-                # 'function' is for older SDK versions, 'function_call' for newer.
-                if tool_call_type == 'function' or tool_call_type == 'function_call':
-                    openai_fc_id = getattr(tool_call_from_openai, 'id', None)
-                    openai_call_id = getattr(tool_call_from_openai, 'call_id', None)
-
-                    if not openai_call_id:
-                        logger.warning(f"Missing 'call_id' in object tool_call: {tool_call_from_openai}, skipping.")
-                        continue
-                    if not openai_fc_id:
-                        logger.warning(f"Missing 'id' (fc_ id) in object tool_call: {tool_call_from_openai}, skipping.")
-                        continue
-                    
-                    if hasattr(tool_call_from_openai, 'name') and hasattr(tool_call_from_openai, 'arguments'):
-                         current_openai_function_name = getattr(tool_call_from_openai, 'name', None)
-                         args_val = getattr(tool_call_from_openai, 'arguments', None)
-                    elif hasattr(tool_call_from_openai, 'function'): # Older SDKs
-                        function_obj = getattr(tool_call_from_openai, 'function', None)
-                        if function_obj:
-                            current_openai_function_name = getattr(function_obj, 'name', None)
-                            args_val = getattr(function_obj, 'arguments', None)
-                        else:
-                            logger.warning(f"Tool call type is '{tool_call_type}' but 'function' attribute is missing or None.")
-                            continue
-                    else:
-                        logger.warning(f"Could not find function name/arguments in tool_call object: {tool_call_from_openai}")
-                        continue
-
-                    if isinstance(args_val, str):
-                        try:
-                            function_args = json.loads(args_val)
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse JSON arguments for object tool_call {openai_call_id}. Args: {args_val}")
-                            function_args = {"error": "Failed to parse arguments", "arguments_string": args_val}
-                    else:
-                        function_args = args_val
+                    args_str = tool_call_from_openai.get('arguments')
+                    try:
+                        function_args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON arguments for dict tool_call {openai_call_id}. Args: {args_str}")
+                        function_args = {"error": "Failed to parse arguments", "arguments_string": args_str}
                 else:
-                    logger.warning(f"Skipping object tool_call with unknown type: {tool_call_type}")
+                    logger.warning(f"Skipping dict tool_call with unknown type: {tool_call_from_openai.get('type')}")
                     continue
             
-            if not openai_call_id or not openai_fc_id or not current_openai_function_name: 
-                logger.warning(f"Skipping tool call due to missing openai_call_id, openai_fc_id, or name. Original tool_call: {tool_call_from_openai}")
+            # Handle object-style tool calls (e.g. ResponseFunctionToolCall from openai>=1.x)
+            elif hasattr(tool_call_from_openai, 'type') and getattr(tool_call_from_openai, 'type') == 'function_call':
+                openai_fc_id = getattr(tool_call_from_openai, 'id', None) # fc_ ID
+                openai_call_id = getattr(tool_call_from_openai, 'call_id', None) # call_ ID
+
+                if not openai_call_id:
+                    logger.warning(f"Missing 'call_id' in object tool_call: {tool_call_from_openai}, attempting to use 'id' as call_id.")
+                    openai_call_id = openai_fc_id
+                if not openai_fc_id:
+                     logger.warning(f"Missing 'id' (fc_ id) in object tool_call: {tool_call_from_openai}. This ID is usually present.")
+                
+                current_openai_function_name = getattr(tool_call_from_openai, 'name', None)
+                args_val = getattr(tool_call_from_openai, 'arguments', None)
+                
+                if isinstance(args_val, str):
+                    try:
+                        function_args = json.loads(args_val)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON arguments for object tool_call {openai_call_id}. Args: {args_val}")
+                        function_args = {"error": "Failed to parse arguments", "arguments_string": args_val}
+                else:
+                    function_args = args_val # Assume it's already a dict if not a string
+            else:
+                logger.warning(f"Skipping tool_call of unhandled type or structure: {type(tool_call_from_openai)}")
+                continue
+            
+            if not openai_call_id or not current_openai_function_name:
+                logger.warning(f"Skipping tool call due to missing openai_call_id or name. Original tool_call: {tool_call_from_openai}")
                 continue
             
             # Resolve the canonical tool name

@@ -6,6 +6,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 from db import Base
 import datetime
+from sqlalchemy.dialects.postgresql import ARRAY
 
 # Enum types (matching PostgreSQL enum types)
 class MessageType(str, Enum):
@@ -64,6 +65,7 @@ class Tool(Base):
     api_request_id = Column(String, ForeignKey("api_requests.id"), nullable=True)
     configuration = Column(JSON, nullable=False)  # Legacy column, kept for backwards compatibility
     function_schema = Column(JSON, nullable=True)  # New column: Directly stores OpenAI function schema
+    skip_params = Column(ARRAY(String), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=True)
     
@@ -262,6 +264,7 @@ class ToolBase(BaseModel):
     tool_type: ToolType
     api_request_id: Optional[str] = None
     function_schema: Optional[Dict[str, Any]] = None
+    skip_params: Optional[List[str]] = None
 
 class ToolCreate(ToolBase):
     pass
@@ -272,6 +275,7 @@ class ToolUpdate(BaseModel):
     tool_type: Optional[ToolType] = None
     api_request_id: Optional[str] = None
     function_schema: Optional[Dict[str, Any]] = None
+    skip_params: Optional[List[str]] = None
 
 class ToolResponse(ToolBase):
     id: str

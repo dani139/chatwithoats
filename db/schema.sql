@@ -79,6 +79,7 @@ CREATE TABLE public.tools (
     api_request_id character varying REFERENCES public.api_requests(id),
     configuration jsonb NOT NULL,
     function_schema jsonb,
+    skip_params character varying[],
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone
 );

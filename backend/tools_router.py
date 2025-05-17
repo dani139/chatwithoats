@@ -148,6 +148,7 @@ async def create_tool(tool: ToolCreate, db: Session = Depends(get_db)):
         api_request_id=tool.api_request_id,
         function_schema=function_schema,
         configuration={},  # Empty configuration for new tools
+        skip_params=tool.skip_params,
         created_at=datetime.utcnow()
     )
     
@@ -333,6 +334,7 @@ async def update_tools_for_chat_settings(
                 api_request_id=tool.api_request_id,
                 function_schema=tool.function_schema.copy() if tool.function_schema else None,
                 configuration={},  # Empty configuration for modern tools
+                skip_params=tool.skip_params,
                 created_at=datetime.utcnow()
             )
             
@@ -396,6 +398,7 @@ async def add_tool_to_chat_settings(
             api_request_id=tool.api_request_id,
             function_schema=tool.function_schema.copy() if tool.function_schema else None,
             configuration={},  # Empty configuration for modern tools
+            skip_params=tool.skip_params,
             created_at=datetime.utcnow()
         )
         

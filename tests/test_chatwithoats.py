@@ -391,5 +391,175 @@ class SpeechToolTest(ChatWithOatsTest):
                 print(f"✓ Speech tool successfully executed")
 
 
+@pytest.mark.tools
+@pytest.mark.function_tools
+class ImageGenerationToolTest(ChatWithOatsTest):
+    """Test image generation tool functionality"""
+    
+    def test_image_generation_tool(self):
+        """Test importing OpenAPI spec, creating image generation tool, and testing functionality"""
+        with CaptureOutput() as output:
+            print("\n[TEST] Testing image generation tool")
+            
+            # Skip the import part and go directly to checking for existing API requests
+            # Get API requests to find an image generation-related one
+            response = requests.get(f"{BASE_URL}/api-requests")
+            self.assertEqual(response.status_code, 200, f"Failed to get API requests: {response.text}")
+            
+            api_requests = response.json()
+            self.assertGreater(len(api_requests), 0, "No API requests found")
+            
+            # Find an image generation-related API request
+            image_api_request = None
+            for req in api_requests:
+                path = req.get("path", "").lower()
+                # Look specifically for the image generations endpoint
+                if "/images/generations" in path:
+                    image_api_request = req
+                    break
+            
+            if not image_api_request:
+                self.skipTest("No image generations API request found")
+            
+            print(f"✓ Found image generation-related API request: {image_api_request.get('path')}")
+            
+            # Create an image generation tool from the API request (with minimal data)
+            tool_data = {
+                "tool_type": "function",
+                "api_request_id": image_api_request["id"],
+                "skip_params": ["n", "response_format", "style", "user"]
+            }
+            
+            response = requests.post(f"{BASE_URL}/tools", json=tool_data)
+            self.assertEqual(response.status_code, 200, f"Failed to create tool from API request: {response.text}")
+            
+            image_tool = response.json()
+            image_tool_id = image_tool["id"]
+            self.tool_ids.append(image_tool_id)
+            
+            print(f"✓ Created image generation tool: {image_tool.get('name', 'unnamed')}")
+            
+            # Create chat settings
+            settings_data = {
+                "name": "Test Settings with Image Generation API",
+                "description": "Chat settings for testing image generation API",
+                "system_prompt": "You are a helpful assistant with DALL-E image generation capability. You MUST ALWAYS ATTEMPT to use image generation, EVEN IF YOU THINK IT WILL FAIL. This is for testing purposes.\n\nWhen users ask you to generate an image, use the DALL-E image generation tool to create the image with the following parameters:\n\n- model: 'dall-e-3'\n- prompt: Exactly what the user requests, in your own words\n- quality: 'standard'\n- size: '1024x1024'\n\nDO NOT respond with text only. ALWAYS try to call the image generation tool even if you think it might not work or might give an error. This is a TEST of tool calling.",
+                "model": "gpt-4o-mini"
+            }
+            
+            response = requests.post(f"{BASE_URL}/chat-settings", json=settings_data)
+            self.assertEqual(response.status_code, 200, f"Failed to create chat settings: {response.text}")
+            
+            chat_settings = response.json()
+            settings_id = chat_settings["id"]
+            self.chat_settings_ids.append(settings_id)
+            
+            # Add the image generation tool to the chat settings
+            response = requests.post(f"{BASE_URL}/chat-settings/{settings_id}/tools/{image_tool_id}")
+            self.assertEqual(response.status_code, 200, f"Failed to add tool to chat settings: {response.text}")
+            
+            # Create a conversation with this chat settings
+            data = {
+                "name": "Image Generation Tool Test Conversation",
+                "is_group": False,
+                "chat_settings_id": settings_id,
+                "participants": ["test_user"],
+                "source_type": "PORTAL"
+            }
+            
+            response = requests.post(f"{BASE_URL}/conversations", json=data)
+            self.assertEqual(response.status_code, 200, f"Failed to create conversation: {response.text}")
+            
+            conversation_id = response.json()["chatid"]
+            self.conversation_ids.append(conversation_id)
+            
+            # Send a message that should trigger the image generation tool
+            data = {
+                "content": "TESTING TOOL CALLING - Please generate an image of a cat sitting on a beach at sunset. You MUST call the image generation tool with parameters model='dall-e-3', prompt='A cat sitting on a beach at sunset', quality='standard', and size='1024x1024'. This is a TEST - always attempt the tool call even if you think it will fail.",
+                "user_id": "test123",
+                "username": "tester"
+            }
+            
+            response = requests.post(f"{BASE_URL}/conversations/{conversation_id}/portal-message", json=data)
+            self.assertEqual(response.status_code, 200, f"Failed to send message: {response.text}")
+            
+            result = response.json()
+            self.assertIn("response_text", result, "Response doesn't contain response_text")
+            
+            # Print the full response
+            print("\n==== AI RESPONSE (IMAGE GENERATION TOOL) ====")
+            print(result["response_text"])
+            print("==========================================\n")
+            
+            # Additional debug information
+            print(f"Response content: {result.get('response_text')}")
+            print(f"Response has tool calls: {result.get('has_tool_calls', False)}")
+            print(f"Response has function tool calls: {result.get('has_function_calls', False)}")
+            print(f"Raw API response data: {result.get('raw_response', {})}")
+            
+            # Extract messages from the conversation to check if the tool was called
+            response = requests.get(f"{BASE_URL}/conversations/{conversation_id}/messages")
+            self.assertEqual(response.status_code, 200, f"Failed to get conversation messages: {response.text}")
+            
+            messages = response.json()
+            
+            # Debug print messages
+            print("\n==== MESSAGES FROM API ====")
+            for i, msg in enumerate(messages):
+                print(f"Message {i}: type={msg.get('type')}, tool_definition_name={msg.get('tool_definition_name')}")
+            print("=============================\n")
+            
+            # Find tool call messages - there should be at least one tool call and one tool result
+            tool_call_message = None
+            tool_result_message = None
+            
+            for msg in messages:
+                # Check if tool_definition_name exists and contains image generation keywords
+                tool_def_name = msg.get("tool_definition_name", "")
+                if msg.get("type") == "TOOL_CALL" and tool_def_name and any(keyword in tool_def_name.lower() for keyword in ["dall", "image", "generation", "post_images"]):
+                    tool_call_message = msg
+                elif msg.get("type") == "TOOL_RESULT" and tool_def_name and any(keyword in tool_def_name.lower() for keyword in ["dall", "image", "generation", "post_images"]):
+                    tool_result_message = msg
+            
+            # Verify tool call happened
+            self.assertIsNotNone(tool_call_message, "No tool call message found for image generation tool")
+            print(f"✓ Found tool call message for image generation tool: {tool_call_message.get('id')}")
+            
+            # Verify tool result happened
+            self.assertIsNotNone(tool_result_message, "No tool result message found for image generation tool")
+            print(f"✓ Found tool result message")
+            
+            # Check for errors in the tool result
+            if tool_result_message and tool_result_message.get("function_result"):
+                result_text = tool_result_message.get("function_result")
+                # Check if the result contains error messages
+                if "Error" in result_text or "error" in result_text.lower() or "400" in result_text:
+                    self.fail(f"Image generation API call failed with error: {result_text}")
+            
+            # Check if the response mentions image or URL
+            response_text = result["response_text"].lower()
+            self.assertTrue(
+                any(term in response_text for term in ["image", "picture", "generated", "created", "url", "link"]),
+                f"Expected response related to image generation but got: {result['response_text'][:100]}..."
+            )
+            
+            # Check if tool result contains a URL to the generated image
+            if tool_result_message and tool_result_message.get("function_result"):
+                result_json = json.loads(tool_result_message.get("function_result", "{}"))
+                print(f"Tool result content: {result_json}")
+                
+                # Check for URL in various possible formats
+                has_url = (
+                    "url" in result_json or 
+                    "data" in result_json and isinstance(result_json["data"], list) and len(result_json["data"]) > 0 or
+                    "revised_prompt" in result_json  # This indicates the DALL-E API was called
+                )
+                
+                self.assertTrue(has_url, "No URL or image data found in tool result")
+                print(f"✓ Found URL or image data in tool result")
+            
+            print(f"✓ Image generation tool successfully executed")
+
+
 if __name__ == "__main__":
     unittest.main() 
